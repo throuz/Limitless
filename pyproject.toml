@@ -1,0 +1,28 @@
+[project]
+name = "polymkt"
+version = "0.1.0"
+description = "Polymarket 套利掃描與交易工具"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "httpx>=0.27.0",
+    "pydantic>=2.6.0",
+    "python-dotenv>=1.0.1",
+    "rich>=13.7.0",
+    "click>=8.1.7",
+]
+
+[project.optional-dependencies]
+trade = [
+    "limitless-sdk>=1.0.10",
+]
+
+[project.scripts]
+polymkt = "polymkt.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["polymkt*"]
