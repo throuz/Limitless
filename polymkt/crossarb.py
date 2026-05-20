@@ -37,6 +37,9 @@ class MatchPair:
     pm_yes_mid: float  # Polymarket midpoint(YES)
     lm_yes_mid: float  # Limitless midpoint(YES)
     diff_pct: float    # (lm - pm) * 100；正值表示 Limitless YES 比較貴
+    # 配對來源（debug/sanity check 用）
+    matched_via: str = "unknown"  # "group" or "single"
+    pm_event_title: str | None = None  # PM event 標題（若 single 比對則同 question）
 
     @property
     def signal(self) -> str:
@@ -89,7 +92,7 @@ def _event_similarity(a: str, b: str) -> float:
 
     回傳值：
     - 1.0 = 對稱差集為空（content tokens 完全相等）
-    - 0.85 = 對稱差正好 1 個 token（容許小幅標題變化，如多一個修飾詞）
+    - 0.85 = 對稱差正好 1 個 token，且雙方至少 3 個 token（容許小幅修飾詞變化）
     - 0.0 否則（不視為匹配）
     """
     ta, tb = _content_tokens(a), _content_tokens(b)
@@ -101,6 +104,21 @@ def _event_similarity(a: str, b: str) -> float:
     if len(diff) == 1 and min(len(ta), len(tb)) >= 3:
         return 0.85
     return 0.0
+
+
+def _strict_question_match(lm_title: str, pm_question: str) -> float:
+    """單一市場層級嚴格比對：只接受 content tokens 完全相等。
+
+    比 _event_similarity 更嚴格 — 不接受 1-token 容差，因為「Anthropic acquired」
+    與「Anthropic acquired by Microsoft」會被 1-token 容差錯誤通過，但其實是
+    完全不同的問題。
+
+    回傳：1.0 = 嚴格匹配；0.0 = 否則。
+    """
+    ta, tb = _content_tokens(lm_title), _content_tokens(pm_question)
+    if not ta or not tb:
+        return 0.0
+    return 1.0 if ta == tb else 0.0
 
 
 def _polymarket_yes_mid(m: PMMarket) -> float | None:
@@ -164,20 +182,29 @@ def _match_in_event(lm_sub_title: str, pm_event: PMEvent) -> tuple[PMMarket | No
 
 async def find_cross_pairs(
     *,
-    min_event_similarity: float = 0.6,
-    min_sub_match: float = 0.7,
+    min_event_similarity: float = 0.85,
+    min_sub_match: float = 0.95,
     min_diff_pct: float = 1.0,
+    min_pm_liquidity: float = 2000.0,
     limitless_max_markets: int = 1000,
     polymarket_max_events: int = 300,
+    require_poly_arbitrage_flag: bool = False,
 ) -> list[MatchPair]:
     """找出 Limitless 與 Polymarket 對應市場 + 報出價差。
 
     匹配演算法：
-    1. 對每個 LM group（isPolyArbitrage），在 PM events 找標題最相似的 event
-       （相似度 >= `min_event_similarity`）。
-    2. 在配對的 event 內，對每個 LM 子市場找對應的 PM 子市場
-       （優先用 PM `group_item_title` 精確 match，相似度 >= `min_sub_match`）。
-    3. 純 single LM 市場用整題標題對 PM 市場直接比對。
+    1. **Group → Event**：對每個 LM group，在 PM events 找標題嚴格匹配的 event
+       （`_event_similarity` ≥ `min_event_similarity`）。
+       配對 event 後，在 event 內對齊子市場（優先 `group_item_title`）。
+    2. **Single → Market**：對每個 LM single 市場，找 PM 上 content tokens 完全
+       相等的 market（`_strict_question_match`）。不接受 1-token 容差以避免
+       「Anthropic acquired」誤配「Anthropic acquired by Microsoft」。
+    3. **PM 流動性過濾**：PM 自己的 liquidity < `min_pm_liquidity` 不採用
+       （PM 不夠厚的話它的價也不是可靠 oracle）。
+
+    `require_poly_arbitrage_flag`:
+      - False（預設）：對所有 LM 市場都嘗試配對 — **擴大訊號池**
+      - True：只配 LM 上 `isPolyArbitrage=True` 的市場（保守模式）
     """
 
     async with LimitlessClient() as lm_c, GammaClient() as pm_c:
@@ -186,9 +213,9 @@ async def find_cross_pairs(
 
     pairs: list[MatchPair] = []
 
-    # 1) LM group → PM event 對齊（用 token jaccard + SequenceMatcher 的較嚴值）
+    # 1) LM group → PM event 對齊
     for lm_g in lm_groups:
-        if not lm_g.is_poly_arbitrage:
+        if require_poly_arbitrage_flag and not lm_g.is_poly_arbitrage:
             continue
         if not lm_g.markets:
             continue
@@ -211,6 +238,8 @@ async def find_cross_pairs(
             pm_sub, sub_score = _match_in_event(lm_sub.title, best_ev)
             if pm_sub is None or sub_score < min_sub_match:
                 continue
+            if pm_sub.liquidity < min_pm_liquidity:
+                continue
             pm_yes = _polymarket_yes_mid(pm_sub)
             if pm_yes is None:
                 continue
@@ -224,24 +253,29 @@ async def find_cross_pairs(
                 pm_yes_mid=pm_yes,
                 lm_yes_mid=lm_yes,
                 diff_pct=diff_pct,
+                matched_via="group",
+                pm_event_title=best_ev.title,
             ))
 
-    # 2) LM single isPolyArbitrage 市場直接整題對 PM 市場
-    pm_market_norm = [(pm, _normalize(pm.question))
-                      for ev in pm_events for pm in ev.markets if pm.is_tradeable]
+    # 2) LM single 市場直接整題對 PM 市場（嚴格 token 比對）
+    pm_markets_flat = [pm for ev in pm_events for pm in ev.markets if pm.is_tradeable]
     for lm in lm_singles:
-        if not (lm.is_poly_arbitrage and lm.is_tradeable):
+        if require_poly_arbitrage_flag and not lm.is_poly_arbitrage:
+            continue
+        if not lm.is_tradeable:
             continue
         lm_yes = _limitless_yes_mid(lm)
         if lm_yes is None:
             continue
-        lm_norm = _normalize(lm.title)
-        best_sim, best_pm = 0.0, None
-        for pm, pm_norm in pm_market_norm:
-            sim = SequenceMatcher(None, lm_norm, pm_norm).ratio()
-            if sim > best_sim:
-                best_sim, best_pm = sim, pm
-        if best_pm is None or best_sim < 0.75:  # single market 要求更高相似度
+        best_pm = None
+        for pm in pm_markets_flat:
+            if _strict_question_match(lm.title, pm.question) >= 1.0:
+                # 第一個嚴格匹配就採用；若多個則挑流動性最高者
+                if best_pm is None or pm.liquidity > best_pm.liquidity:
+                    best_pm = pm
+        if best_pm is None:
+            continue
+        if best_pm.liquidity < min_pm_liquidity:
             continue
         pm_yes = _polymarket_yes_mid(best_pm)
         if pm_yes is None:
@@ -252,10 +286,12 @@ async def find_cross_pairs(
         pairs.append(MatchPair(
             polymarket=best_pm,
             limitless=lm,
-            title_similarity=best_sim,
+            title_similarity=1.0,
             pm_yes_mid=pm_yes,
             lm_yes_mid=lm_yes,
             diff_pct=diff_pct,
+            matched_via="single",
+            pm_event_title=best_pm.event_title,
         ))
 
     pairs.sort(key=lambda p: abs(p.diff_pct), reverse=True)

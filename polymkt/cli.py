@@ -396,20 +396,133 @@ def lm_place_order_cmd(slug: str, side: str, outcome: str, price: float,
     asyncio.run(_run())
 
 
+# ---------- 做市 ----------
+
+@limitless_group.command(name="make-market")
+@click.option("--slug", required=True, help="要做市的市場 slug")
+@click.option("--capital", "capital_usdc", type=float, default=100.0,
+              help="本次做市總資本上限（USDC）")
+@click.option("--quote-size", type=float, default=20.0,
+              help="每邊單筆股數（YES 與 NO 各掛這麼多）")
+@click.option("--target-profit-pct", type=float, default=4.0,
+              help="想吃的價差百分點（雙邊都成交時的 ROI），預設 4%")
+@click.option("--half-spread-pct", type=float, default=1.0,
+              help="報價偏離 LM mid 多少，預設 1pp（單邊）")
+@click.option("--max-inventory", type=float, default=50.0,
+              help="YES 或 NO 任一達此股數就停止下單（庫存上限）")
+@click.option("--iter-sleep", type=int, default=30,
+              help="每次重新報價間隔秒數，預設 30 秒")
+@click.option("--duration", type=int, default=600,
+              help="做市持續秒數（預設 10 分鐘）；設 0 = 無限直到 Ctrl-C")
+@click.option("--execute", is_flag=True,
+              help="真實下單；不加就只是 dry-run，不會送 API")
+def lm_make_market_cmd(slug: str, capital_usdc: float, quote_size: float,
+                       target_profit_pct: float, half_spread_pct: float,
+                       max_inventory: float, iter_sleep: int, duration: int,
+                       execute: bool) -> None:
+    """在指定市場做雙 BID 做市（CTF: BUY YES + BUY NO）。
+
+    策略：兩邊同時掛買單，理論上總和 < $1。若兩邊都被吃 → 持有 1 YES + 1 NO，
+    結算保證 $1，賺差額。若只吃一邊 → 累積該方向庫存，等對手出現或結算。
+
+    [yellow]預設 dry-run[/yellow]：只印「將要做什麼」、不真的送 API。
+    """
+    from .limitless.market_maker import MakerConfig, MarketMaker
+    from .limitless.trading import LimitlessTradingClient
+
+    cfg = MakerConfig(
+        slug=slug,
+        capital_usdc=capital_usdc,
+        quote_size_shares=quote_size,
+        target_profit_pct=target_profit_pct,
+        half_spread_offset_pct=half_spread_pct,
+        max_inventory_shares=max_inventory,
+        iteration_sleep_s=float(iter_sleep),
+        duration_s=duration,
+    )
+
+    if execute:
+        os.environ["LIMITLESS_EXECUTE"] = "1"
+
+    async def _run():
+        try:
+            tc = LimitlessTradingClient.from_env()
+        except RuntimeError as e:
+            console.print(f"[red]{e}[/red]")
+            console.print("[yellow]無認證無法做市；先跑 auth-derive 並設定 .env[/yellow]")
+            sys.exit(1)
+
+        async with LimitlessClient() as lc:
+            mm = MarketMaker(cfg, tc, lc)
+            try:
+                await mm.init_market()
+            except Exception as e:
+                console.print(f"[red]無法載入市場 {slug}: {e}[/red]")
+                sys.exit(1)
+
+            console.print(Panel(
+                f"[bold]做市啟動 ({'真實' if execute else 'DRY-RUN'})[/bold]\n"
+                f"市場：{mm.market.get('title', slug)}\n"
+                f"資本上限：${capital_usdc:.0f}  "
+                f"每邊股數：{quote_size:.0f}\n"
+                f"目標 ROI：{target_profit_pct:.1f}%  "
+                f"報價偏移：±{half_spread_pct:.1f}pp\n"
+                f"庫存上限：{max_inventory:.0f} 股  "
+                f"持續：{duration}s  "
+                f"重評間隔：{iter_sleep}s",
+                border_style="green" if execute else "yellow",
+            ))
+
+            def on_iter(n, result):
+                line = (
+                    f"[dim]#{n:02d}[/dim]  "
+                    f"YES @${result.yes_bid_price:.3f} + NO @${result.no_bid_price:.3f}  "
+                    f"(和 ${result.yes_bid_price + result.no_bid_price:.3f})"
+                )
+                console.print(line)
+                for note in result.notes:
+                    console.print(f"      [dim]{note}[/dim]")
+
+            try:
+                stats = await mm.run(on_iteration=on_iter)
+            except KeyboardInterrupt:
+                console.print("\n[yellow]使用者中止，正在取消訂單...[/yellow]")
+                await mm.cancel_all()
+                sys.exit(0)
+            finally:
+                await tc.close()
+
+        console.print(Panel(
+            f"做市結束\n"
+            f"執行 iterations: {stats['iterations']}\n"
+            f"累計資本使用: ${stats['capital_used']:.2f}\n"
+            f"最後一輪報價: YES ${stats['last_yes_bid']:.3f} / NO ${stats['last_no_bid']:.3f}",
+            border_style="dim",
+        ))
+
+    asyncio.run(_run())
+
+
 # ---------- 跨平台價差 ----------
 
 @click.command(name="crossarb")
-@click.option("--min-event-similarity", type=float, default=0.6,
-              help="LM group 與 PM event 標題相似度門檻（預設 0.6）")
-@click.option("--min-sub-match", type=float, default=0.7,
-              help="子市場匹配分數門檻（預設 0.7）")
+@click.option("--min-event-similarity", type=float, default=0.85,
+              help="LM group 與 PM event 標題嚴格相似度門檻（預設 0.85）")
+@click.option("--min-sub-match", type=float, default=0.95,
+              help="子市場匹配分數門檻（預設 0.95，幾乎要求 group_item_title 精確匹配）")
 @click.option("--min-diff-pct", type=float, default=1.0,
               help="最小 YES 價差百分點（預設 1.0pp = $0.01）")
+@click.option("--min-pm-liquidity", type=float, default=2000.0,
+              help="PM 市場最低流動性（USDC）；PM 自己不夠厚就不當 oracle（預設 $2000）")
+@click.option("--poly-arb-flag-only", is_flag=True,
+              help="只配對 LM 上 isPolyArbitrage=True 的市場（保守模式）；"
+                   "預設關閉以擴大訊號池")
 @click.option("--limitless-max", type=int, default=1000)
 @click.option("--polymarket-max", type=int, default=300)
 @click.option("--top", type=int, default=20)
 def crossarb_cmd(min_event_similarity: float, min_sub_match: float,
-                 min_diff_pct: float,
+                 min_diff_pct: float, min_pm_liquidity: float,
+                 poly_arb_flag_only: bool,
                  limitless_max: int, polymarket_max: int, top: int) -> None:
     """跨平台 Polymarket↔Limitless 價差訊號。
 
@@ -424,30 +537,36 @@ def crossarb_cmd(min_event_similarity: float, min_sub_match: float,
                 min_event_similarity=min_event_similarity,
                 min_sub_match=min_sub_match,
                 min_diff_pct=min_diff_pct,
+                min_pm_liquidity=min_pm_liquidity,
+                require_poly_arbitrage_flag=poly_arb_flag_only,
                 limitless_max_markets=limitless_max,
                 polymarket_max_events=polymarket_max,
             )
         console.rule(f"[bold]找到 {len(pairs)} 組跨平台價差[/bold]")
         if not pairs:
-            console.print("沒找到符合條件的配對。試試 --min-event-similarity 0.5 或 --min-diff-pct 0.5")
+            console.print("沒找到符合條件的配對。試試降低 --min-pm-liquidity 或 --min-diff-pct")
             return
 
         t = Table(show_lines=True)
-        t.add_column("相似度", justify="right")
+        t.add_column("來源")
+        t.add_column("LM 標題 / PM 對應事件", overflow="fold")
         t.add_column("PM(YES)", justify="right")
         t.add_column("LM(YES)", justify="right")
         t.add_column("價差", justify="right")
+        t.add_column("PM 流動性", justify="right")
         t.add_column("方向訊號", overflow="fold")
-        t.add_column("標的", overflow="fold")
         for p in pairs[:top]:
             color = "green" if p.diff_pct < 0 else "red"
+            pm_event = p.pm_event_title or p.polymarket.question
+            label = f"[bold]{p.limitless.title[:45]}[/bold]\n[dim]PM: {pm_event[:55]}[/dim]"
             t.add_row(
-                f"{p.title_similarity:.2f}",
+                p.matched_via,
+                label,
                 f"${p.pm_yes_mid:.3f}",
                 f"${p.lm_yes_mid:.3f}",
                 Text(f"{p.diff_pct:+.2f}pp", style=color),
+                f"${p.polymarket.liquidity:,.0f}",
                 p.signal,
-                p.limitless.title[:50],
             )
         console.print(t)
         console.print(Panel(
@@ -472,7 +591,9 @@ def cli() -> None:
 
 
 @click.command(name="crossarb-execute")
-@click.option("--min-event-similarity", type=float, default=0.8)
+@click.option("--min-event-similarity", type=float, default=0.85)
+@click.option("--min-pm-liquidity", type=float, default=2000.0,
+              help="PM oracle 最低流動性（USDC）— 太薄的 PM 市場不採用")
 @click.option("--min-diff-pct", type=float, default=5.0,
               help="只交易價差 >= 此值（百分點）的訊號（預設 5pp，較保守）")
 @click.option("--max-positions", type=int, default=5,
@@ -488,7 +609,8 @@ def cli() -> None:
 @click.option("--limitless-max", type=int, default=1000)
 @click.option("--polymarket-max", type=int, default=300)
 @click.option("--execute", is_flag=True, help="真實下單；不加就只是 dry-run")
-def crossarb_execute_cmd(min_event_similarity: float, min_diff_pct: float,
+def crossarb_execute_cmd(min_event_similarity: float, min_pm_liquidity: float,
+                         min_diff_pct: float,
                          max_positions: int, notional_per_trade: float,
                          order_type: str, safety_margin_pct: float,
                          limitless_max: int, polymarket_max: int,
@@ -514,8 +636,9 @@ def crossarb_execute_cmd(min_event_similarity: float, min_diff_pct: float,
         with console.status("[cyan]擷取跨平台價差..."):
             pairs = await find_cross_pairs(
                 min_event_similarity=min_event_similarity,
-                min_sub_match=0.7,
+                min_sub_match=0.95,
                 min_diff_pct=min_diff_pct,
+                min_pm_liquidity=min_pm_liquidity,
                 limitless_max_markets=limitless_max,
                 polymarket_max_events=polymarket_max,
             )

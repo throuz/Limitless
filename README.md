@@ -71,6 +71,75 @@ LIMITLESS_EXECUTE=1 .venv/bin/polymkt limitless place-order \
   --price 0.30 --size 30 --order-type GTC --execute
 ```
 
+## 做市 (v0.5a)
+
+### 原理：CTF 雙 BID
+
+不需要先有庫存就能做市。掛兩個 BUY 限價單（YES + NO），總和 < $1：
+
+```
+YES mid = $0.30, NO mid = $0.70 → 兩邊各扣 1pp 偏移
+掛 BUY YES @ $0.28 + BUY NO @ $0.68 (總和 $0.96)
+
+情境 A：兩邊都被吃 → 持 1 YES + 1 NO → 結算保證 $1 → 賺 $0.04 (4.2% ROI)
+情境 B：只 YES 被吃 → 累積 YES 庫存 → 等對手或下輪重新報價拉低 YES bid
+情境 C：只 NO 被吃 → 累積 NO 庫存 → 同上鏡像
+情境 D：都沒被吃 → 下輪重評，視 mid 變化重掛
+```
+
+### 啟動指令
+
+```bash
+# 先 dry-run 看設定是否合理
+.venv/bin/polymkt limitless make-market \
+  --slug <some-market-slug> \
+  --capital 100 \
+  --quote-size 20 \
+  --target-profit-pct 4 \
+  --half-spread-pct 1 \
+  --max-inventory 50 \
+  --iter-sleep 30 \
+  --duration 600
+
+# 真的下單（加 --execute）
+LIMITLESS_EXECUTE=1 .venv/bin/polymkt limitless make-market \
+  --slug <some-market-slug> --capital 100 --quote-size 20 \
+  --execute
+```
+
+### 參數含義
+
+| 參數 | 預設 | 意義 |
+|------|------|------|
+| `--capital` | $100 | 本次做市總資本上限；累計達就停止下新單 |
+| `--quote-size` | 20 | 每邊單筆股數 |
+| `--target-profit-pct` | 4% | 兩邊都成交時的 ROI；同時也是 yes_bid + no_bid 的折扣 |
+| `--half-spread-pct` | 1pp | 每邊報價偏離 LM mid 多少 |
+| `--max-inventory` | 50 股 | YES 或 NO 任一達此股數就停止下單（庫存上限） |
+| `--iter-sleep` | 30s | 重新報價間隔 |
+| `--duration` | 600s | 持續時間；設 0 = 無限直到 Ctrl-C |
+
+### 怎麼選市場
+
+- ✅ **適合做市**：流動性低、spread 寬、距結算還久（>1 週）、PM 有相關信號可當公平價
+- ❌ **避免做市**：高頻幣價題（其他 bot 已佔領）、即將結算（resolution risk）、單邊資訊明確（被資訊套利）
+
+用 `polymkt limitless closest --top 30` 找候選市場。
+
+### 已知限制（v0.5a）
+
+- 只支援一次一個市場（無多市場並行）
+- 對稱報價（庫存偏一邊時沒做 quote skew）
+- 不接 PM 鏡像當公平價（用 LM 自己 mid，易被資訊套利）
+- 不偵測結算事件（必須手動停）
+- 結算前若還有庫存，按結果定生死
+
+### 風險
+
+- **庫存單邊堆積**：只一邊被吃 → 累積該方向庫存 → 該方向結算為 NO 時全賠
+- **資訊套利**：知情交易者偷掃單 → 你以「中價偏移」掛單，他們會挑出最便宜的一邊
+- **資本鎖死**：訂單未成交也鎖定資本（LM 內部 escrow）
+
 ## 安全機制
 
 | 機制 | 設定 | 行為 |
@@ -134,10 +203,16 @@ LIMITLESS_EXECUTE=1 .venv/bin/polymkt limitless place-order \
 
 ### `polymkt crossarb-execute ...`
 
-**主力**：自動化跨平台訊號交易。
-- 找 PM↔LM 價差 ≥ `--min-diff-pct` 的訊號
-- 用 GTC（限價掛 maker）或 FAK（IOC 立即成交）方式下單
-- 預設 GTC + maker-offset 0.5pp（取 PM 中價 + 安全 margin）
+跨平台訊號交易。找 PM↔LM 價差 ≥ `--min-diff-pct` 的訊號 → 在 LM 下單。
+**已知限制**：訊號池小（4-6 個），多數對應 LM 流動性差的市場。
+
+### `polymkt limitless make-market --slug <slug>` (v0.5a 做市)
+
+**雙 BID 做市**：在指定市場同時掛 BUY YES + BUY NO，總和 < $1，等對手吃單。
+- 雙邊都成交：保證 $1 payout，賺差額
+- 單邊成交：累積該方向庫存
+- 預設 dry-run；目標 ROI、報價偏移、庫存上限、持續時間都可調
+- 詳見[做市運作說明](#做市-v05a)章節
 
 ## 額外指令
 
@@ -199,7 +274,8 @@ polymkt/
 - [x] v0.2：Limitless 掃描器（讀取，主要交易場域）
 - [x] v0.3：Cross-arb 訊號（PM↔LM 價差）
 - [x] v0.4：**Limitless 自動下單**（dry-run + 安全限額 + EIP-712 簽名透過官方 SDK）
-- [ ] v0.5：Maker 策略（在 Limitless 寬 spread 上掛雙邊限價單，做市賺價差）
+- [x] v0.5a：**Limitless 雙 BID 做市**（單市場、對稱報價）
+- [ ] v0.5b：做市進階防禦（quote skew、PM oracle、自動退出）
 - [ ] v0.6：鯨魚追蹤（追蹤 Polymarket 上歷史高 ROI 錢包）
 - [ ] v0.7：持倉管理（追蹤已開倉位、自動平倉、停損規則）
 
