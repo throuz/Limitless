@@ -414,11 +414,17 @@ def lm_place_order_cmd(slug: str, side: str, outcome: str, price: float,
               help="每次重新報價間隔秒數，預設 30 秒")
 @click.option("--duration", type=int, default=600,
               help="做市持續秒數（預設 10 分鐘）；設 0 = 無限直到 Ctrl-C")
+@click.option("--oracle", type=click.Choice(["lm", "pm", "blend"]), default="lm",
+              help="公平價來源：lm=LM 自己 mid（預設）/ pm=Polymarket 鏡像（更抗資訊套利）"
+                   "/ blend=PM 60% + LM 40%")
+@click.option("--inventory-skew-pct", type=float, default=0.5,
+              help="(v0.5b) 庫存每超出 max 的 10%，把對應方向 bid 拉走多少 pp（預設 0.5）")
 @click.option("--execute", is_flag=True,
               help="真實下單；不加就只是 dry-run，不會送 API")
 def lm_make_market_cmd(slug: str, capital_usdc: float, quote_size: float,
                        target_profit_pct: float, half_spread_pct: float,
                        max_inventory: float, iter_sleep: int, duration: int,
+                       oracle: str, inventory_skew_pct: float,
                        execute: bool) -> None:
     """在指定市場做雙 BID 做市（CTF: BUY YES + BUY NO）。
 
@@ -439,6 +445,8 @@ def lm_make_market_cmd(slug: str, capital_usdc: float, quote_size: float,
         max_inventory_shares=max_inventory,
         iteration_sleep_s=float(iter_sleep),
         duration_s=duration,
+        oracle_mode=oracle,
+        inventory_skew_pct=inventory_skew_pct,
     )
 
     if execute:
@@ -746,8 +754,273 @@ def crossarb_execute_cmd(min_event_similarity: float, min_pm_liquidity: float,
     asyncio.run(_run())
 
 
+# ---------- 鯨魚跟單 ----------
+
+@click.group(name="whales")
+def whales_group() -> None:
+    """Polymarket 鯨魚追蹤 + 跟單系統。"""
+
+
+@whales_group.command(name="list")
+@click.option("--trades-limit", type=int, default=3000,
+              help="從近期多少 trades 中提取活躍錢包（預設 3000）")
+@click.option("--min-trade", type=float, default=300.0,
+              help="忽略 notional < 此值的小單（預設 $300）")
+@click.option("--min-value", type=float, default=10000.0,
+              help="錢包當下組合價值最低門檻（USDC）")
+@click.option("--min-bought", type=float, default=20000.0,
+              help="錢包累計交易量最低門檻（USDC，衡量資歷）")
+@click.option("--top", type=int, default=20)
+def whales_list_cmd(trades_limit: int, min_trade: float, min_value: float,
+                    min_bought: float, top: int) -> None:
+    """列出近期最有 alpha 的鯨魚錢包。
+
+    Alpha = (已實現 ROI + 70% × 未實現 ROI) × log(累計交易量)
+    """
+    from .whales import top_whales
+
+    async def _run():
+        with console.status("[cyan]掃描 Polymarket 活躍錢包..."):
+            whales = await top_whales(
+                trades_limit=trades_limit,
+                min_trade_notional=min_trade,
+                min_portfolio_value=min_value,
+                min_total_bought=min_bought,
+                top_n=top,
+            )
+        if not whales:
+            console.print("[yellow]沒找到符合條件的鯨魚。試試降低 --min-value 或擴大 --trades-limit[/yellow]")
+            return
+
+        t = Table(title=f"Top {len(whales)} Polymarket whales", show_lines=True)
+        t.add_column("#", width=3)
+        t.add_column("Wallet")
+        t.add_column("Alpha", justify="right")
+        t.add_column("已實現 ROI", justify="right")
+        t.add_column("總 ROI", justify="right")
+        t.add_column("組合價值", justify="right")
+        t.add_column("Realized $", justify="right")
+        t.add_column("Bought $", justify="right")
+        t.add_column("倉位數", justify="right")
+        for i, w in enumerate(whales, 1):
+            roi_style = "green" if w.realized_roi_pct > 0 else "yellow" if w.realized_roi_pct > -2 else "red"
+            t.add_row(
+                str(i),
+                w.proxy_wallet[:10] + "...",
+                f"{w.alpha_score:+.1f}",
+                Text(f"{w.realized_roi_pct:+.2f}%", style=roi_style),
+                f"{w.total_roi_pct:+.2f}%",
+                f"${w.portfolio_value:,.0f}",
+                f"${w.total_realized_pnl:+,.0f}",
+                f"${w.total_bought:,.0f}",
+                str(w.n_positions),
+            )
+        console.print(t)
+        console.print(Panel(
+            "把要追蹤的 wallet 寫進 .env（逗號分隔）：\n"
+            "[bold]WHALE_WALLETS=0xc97b...,0x204f...[/bold]\n"
+            "然後跑 [bold]polymkt whales watch[/bold] 即時監控他們的新動作",
+            border_style="dim",
+        ))
+
+    asyncio.run(_run())
+
+
+@whales_group.command(name="watch")
+@click.option("--wallets", default=None,
+              help="逗號分隔的 wallet list；預設讀 WHALE_WALLETS 環境變數")
+@click.option("--lookback-min", type=int, default=60,
+              help="只看最近 N 分鐘內的鯨魚動作")
+@click.option("--min-trade", type=float, default=500.0,
+              help="跟單訊號最低 notional")
+@click.option("--trades-limit", type=int, default=3000)
+def whales_watch_cmd(wallets: str | None, lookback_min: int,
+                     min_trade: float, trades_limit: int) -> None:
+    """監控指定鯨魚的最新動作、產生跟單訊號。"""
+    from .whales import find_whale_signals, top_whales, PolymarketDataClient, score_wallet
+    import time
+
+    wallet_str = wallets or os.environ.get("WHALE_WALLETS", "").strip()
+    if not wallet_str:
+        console.print("[red]沒指定要追的 wallet。用 --wallets 或設 WHALE_WALLETS 環境變數[/red]")
+        return
+    wallet_list = [w.strip().lower() for w in wallet_str.split(",") if w.strip()]
+
+    async def _run():
+        # 對給定 wallets 算 score（用來顯示）
+        with console.status("[cyan]載入鯨魚 metadata..."):
+            async with PolymarketDataClient() as c:
+                scores = await asyncio.gather(*(score_wallet(c, w) for w in wallet_list))
+        scores = [s for s in scores if s is not None]
+        if not scores:
+            console.print("[red]無法取得任何 wallet 的資料[/red]")
+            return
+
+        since = int(time.time()) - lookback_min * 60
+        with console.status(f"[cyan]掃近 {lookback_min} 分鐘的鯨魚動作..."):
+            signals = await find_whale_signals(
+                scores, since_timestamp=since,
+                trades_limit=trades_limit,
+                min_trade_notional=min_trade,
+            )
+
+        if not signals:
+            console.print(f"[yellow]近 {lookback_min} 分鐘內沒有 ≥ ${min_trade:.0f} 的鯨魚動作[/yellow]")
+            return
+
+        t = Table(title=f"鯨魚動作 (近 {lookback_min} 分鐘)", show_lines=True)
+        t.add_column("時間")
+        t.add_column("鯨魚")
+        t.add_column("Alpha")
+        t.add_column("方向")
+        t.add_column("市場", overflow="fold")
+        t.add_column("價格", justify="right")
+        t.add_column("Notional", justify="right")
+        for s in sorted(signals, key=lambda x: -x.trade.timestamp):
+            from datetime import datetime, timezone
+            ts = datetime.fromtimestamp(s.trade.timestamp, tz=timezone.utc).strftime("%H:%M")
+            t.add_row(
+                ts,
+                s.whale[:8] + "...",
+                f"{s.whale_alpha_score:+.0f}",
+                f"{s.trade.side} {s.trade.outcome}",
+                s.trade.title[:55],
+                f"${s.trade.price:.3f}",
+                f"${s.trade.notional:,.0f}",
+            )
+        console.print(t)
+
+    asyncio.run(_run())
+
+
+@whales_group.command(name="follow")
+@click.option("--wallets", default=None, help="逗號分隔的 wallet list；預設讀 WHALE_WALLETS 環境變數")
+@click.option("--lookback-min", type=int, default=60)
+@click.option("--min-trade", type=float, default=500.0)
+@click.option("--max-positions", type=int, default=3, help="本次最多開幾個跟單部位")
+@click.option("--notional-per-trade", type=float, default=10.0)
+@click.option("--max-price", type=float, default=0.85,
+              help="鯨魚以這個價以上下注 → 跳過（已 priced in 太多）")
+@click.option("--execute", is_flag=True, help="真實下單；不加就只是 dry-run")
+def whales_follow_cmd(wallets: str | None, lookback_min: int, min_trade: float,
+                      max_positions: int, notional_per_trade: float,
+                      max_price: float, execute: bool) -> None:
+    """跟單：把鯨魚最新動作鏡像到 Limitless（若有對應市場）。
+
+    流程：
+      1. 跑 whales watch 拿訊號
+      2. 對每個訊號嘗試找 LM 對應市場（嚴格 token 比對）
+      3. 對找到對應的訊號在 LM 下單（FAK 立即吃 best ask 或 GTC 排隊）
+      4. 預設 dry-run；加 --execute 才真實送出
+    """
+    from .whales import find_whale_signals, attach_limitless_markets, PolymarketDataClient, score_wallet
+    from .limitless.trading import LimitlessTradingClient, OrderRequest
+    import time
+
+    wallet_str = wallets or os.environ.get("WHALE_WALLETS", "").strip()
+    if not wallet_str:
+        console.print("[red]沒指定要追的 wallet。用 --wallets 或設 WHALE_WALLETS[/red]")
+        return
+    wallet_list = [w.strip().lower() for w in wallet_str.split(",") if w.strip()]
+
+    async def _run():
+        # 算 whale scores
+        with console.status("[cyan]載入鯨魚 metadata..."):
+            async with PolymarketDataClient() as c:
+                scores = await asyncio.gather(*(score_wallet(c, w) for w in wallet_list))
+        scores = [s for s in scores if s is not None]
+
+        since = int(time.time()) - lookback_min * 60
+        with console.status(f"[cyan]掃近 {lookback_min} 分鐘鯨魚動作..."):
+            signals = await find_whale_signals(
+                scores, since_timestamp=since,
+                trades_limit=3000,
+                min_trade_notional=min_trade,
+            )
+
+        if not signals:
+            console.print("[yellow]無新動作[/yellow]")
+            return
+
+        with console.status("[cyan]比對 Limitless 市場..."):
+            signals = await attach_limitless_markets(signals)
+
+        actionable = [s for s in signals if s.is_actionable
+                      and s.trade.price <= max_price]
+        non_actionable = [s for s in signals if not s.is_actionable]
+
+        # 顯示所有訊號
+        t = Table(title=f"鯨魚跟單訊號 ({'真實' if execute else 'DRY-RUN'})", show_lines=True)
+        t.add_column("鯨魚")
+        t.add_column("方向")
+        t.add_column("PM 市場", overflow="fold")
+        t.add_column("Notional", justify="right")
+        t.add_column("LM 對應")
+        for s in actionable + non_actionable[:5]:
+            t.add_row(
+                s.whale[:8] + "...",
+                f"{s.trade.side} {s.trade.outcome}",
+                s.trade.title[:55],
+                f"${s.trade.notional:,.0f}",
+                Text(s.lm_slug[:30] if s.lm_slug else "[red]無對應[/red]", style="green" if s.is_actionable else "red"),
+            )
+        console.print(t)
+        console.print(f"可下單訊號：{len(actionable)} / 總訊號：{len(signals)}")
+
+        if not actionable:
+            console.print("[yellow]沒有 LM 有對應市場的訊號，本次不下單[/yellow]")
+            return
+
+        # 取前 N 個下單
+        if execute:
+            os.environ["LIMITLESS_EXECUTE"] = "1"
+        try:
+            tc = LimitlessTradingClient.from_env()
+        except RuntimeError as e:
+            console.print(f"[red]無認證 — 無法下單[/red]")
+            console.print(f"  {e}")
+            return
+
+        results_t = Table(title="下單結果", show_lines=True)
+        results_t.add_column("方向")
+        results_t.add_column("市場", overflow="fold")
+        results_t.add_column("價格")
+        results_t.add_column("Notional")
+        results_t.add_column("結果")
+
+        for s in actionable[:max_positions]:
+            side_buy, outcome_label = (s.suggested_lm_side or "BUY YES").split()
+            token_id = s.lm_yes_token if outcome_label == "YES" else s.lm_no_token
+            # 用鯨魚的成交價當參考；加 1pp safety margin
+            target_price = min(0.99, max(0.01, round(s.trade.price + 0.01, 3)))
+            size = max(1.0, notional_per_trade / target_price)
+
+            req = OrderRequest(
+                market_slug=s.lm_slug,
+                token_id=token_id,
+                side="BUY",
+                price=target_price,
+                size_shares=round(size, 2),
+                order_type="FAK",  # 立即吃，鯨魚動作後愈早跟愈好
+            )
+            res = await tc.place_order(req)
+            results_t.add_row(
+                f"BUY {outcome_label}",
+                s.trade.title[:50],
+                f"${req.price:.3f}",
+                f"${req.notional:.2f}",
+                "[yellow]DRY[/yellow]" if res.dry_run else ("[green]OK[/green]" if res.accepted else f"[red]{res.error}[/red]"),
+            )
+
+        await tc.close()
+        console.print(results_t)
+
+    asyncio.run(_run())
+
+
 cli.add_command(polymarket_group)
 cli.add_command(limitless_group)
+cli.add_command(whales_group)
 cli.add_command(crossarb_cmd)
 cli.add_command(crossarb_execute_cmd)
 

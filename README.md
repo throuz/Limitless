@@ -71,7 +71,55 @@ LIMITLESS_EXECUTE=1 .venv/bin/polymkt limitless place-order \
   --price 0.30 --size 30 --order-type GTC --execute
 ```
 
-## 做市 (v0.5a)
+## 鯨魚跟單系統
+
+從 Polymarket 公開 data API（`data-api.polymarket.com`）拿全平台交易，自動找高 ROI 錢包並追蹤。
+
+### 三步驟流程
+
+```bash
+# 1. 列出近期最有 alpha 的鯨魚（dollar-weighted ROI × log 量級）
+.venv/bin/polymkt whales list --top 10
+
+# 2. 挑你想追的 wallet，寫進 .env：
+#    WHALE_WALLETS=0xc97b...,0x42c99f...
+#    或直接 --wallets 帶入
+
+# 3. 監控他們的新動作（看訊號，不下單）
+.venv/bin/polymkt whales watch --lookback-min 60 --min-trade 500
+
+# 4. 自動跟單（dry-run）
+.venv/bin/polymkt whales follow --lookback-min 60 --min-trade 500 \
+  --max-positions 3 --notional-per-trade 10
+```
+
+### Alpha 評分公式
+
+```
+alpha = (已實現 PnL + 0.7 × 未實現 PnL) / 累計買入金額 × 100 × log(1 + 累計買入金額/1000)
+```
+
+- 用 dollar-weighted（不被「玩 10 筆小單虧 -100%」拉低）
+- log 量級加分（避免「賺一次大運氣」混進來）
+- 70% 折現未實現（避免被市價短期波動過度影響）
+
+### 已知限制
+
+1. **API 偶爾不一致**：某些 wallet `/positions` 時而回空。我們已經做了 fallback，但偶爾鯨魚 score 抓不到
+2. **跟單對應率低**：鯨魚追的題目多半 LM 沒對應（網球、商品、財報），實測 follow 命令對應率 < 20%
+3. **過去 ROI ≠ 未來 ROI**：高 ROI 可能是運氣 + 倖存者偏差
+4. **時間延遲**：鯨魚 PM 下單 → 我們 watch 抓到 → LM 下單，整段約 30-60 秒；對短期 alpha 不利
+
+### 把 wallet 寫進 .env
+
+```bash
+# .env
+WHALE_WALLETS=0xc97b0b2a2547bb3ed57167092ef8a6e816c347e5,0x42c99f38d2b951b0dc8e8bd5371fa80c9dd19623
+```
+
+之後 `watch` / `follow` 命令無需 `--wallets` 旗標。
+
+## 做市 (v0.5b)
 
 ### 原理：CTF 雙 BID
 
@@ -126,13 +174,27 @@ LIMITLESS_EXECUTE=1 .venv/bin/polymkt limitless make-market \
 
 用 `polymkt limitless closest --top 30` 找候選市場。
 
-### 已知限制（v0.5a）
+### 已知限制（v0.5b）
 
 - 只支援一次一個市場（無多市場並行）
-- 對稱報價（庫存偏一邊時沒做 quote skew）
-- 不接 PM 鏡像當公平價（用 LM 自己 mid，易被資訊套利）
+- ~~對稱報價（庫存偏一邊時沒做 quote skew）~~ ✅ v0.5b 已加 inventory skew
+- ~~不接 PM 鏡像當公平價~~ ✅ v0.5b 加了 `--oracle pm/blend` 選項
 - 不偵測結算事件（必須手動停）
 - 結算前若還有庫存，按結果定生死
+
+### v0.5b 新功能
+
+**Oracle 公平價來源**（`--oracle` 旗標）：
+- `lm`（預設）：用 LM 自己 orderbook mid。容易被資訊套利
+- `pm`：找 PM 上 token-equal 的鏡像市場，用 PM mid 當公平價。**抗資訊套利**
+- `blend`：PM 60% + LM 40% 混合
+
+PM 配對失敗時自動 fallback 到 LM。
+
+**Inventory skew**（`--inventory-skew-pct` 旗標）：
+- 當持有 YES > NO，YES bid 自動下調（避免買更多 YES）；反之亦然
+- 預設 0.5pp / 每超出 max 的 10%
+- 改善單邊堆積後仍維持中性的能力
 
 ### 風險
 
@@ -206,13 +268,23 @@ LIMITLESS_EXECUTE=1 .venv/bin/polymkt limitless make-market \
 跨平台訊號交易。找 PM↔LM 價差 ≥ `--min-diff-pct` 的訊號 → 在 LM 下單。
 **已知限制**：訊號池小（4-6 個），多數對應 LM 流動性差的市場。
 
-### `polymkt limitless make-market --slug <slug>` (v0.5a 做市)
+### `polymkt limitless make-market --slug <slug>` (v0.5b 做市)
 
 **雙 BID 做市**：在指定市場同時掛 BUY YES + BUY NO，總和 < $1，等對手吃單。
 - 雙邊都成交：保證 $1 payout，賺差額
 - 單邊成交：累積該方向庫存
 - 預設 dry-run；目標 ROI、報價偏移、庫存上限、持續時間都可調
-- 詳見[做市運作說明](#做市-v05a)章節
+- **v0.5b 新增**：可選 `--oracle pm/blend` 用 Polymarket 鏡像當公平價（抗資訊套利），`--inventory-skew-pct` 庫存偏一邊時自動拉走報價
+- 詳見[做市運作說明](#做市-v05b)章節
+
+### `polymkt whales list / watch / follow`
+
+**鯨魚跟單系統**：追蹤 Polymarket 高 ROI 錢包、將其新動作鏡像到 Limitless。
+- `whales list` — 列出近期最有 alpha 的鯨魚（dollar-weighted ROI × log 量級）
+- `whales watch --wallets ...` — 監控指定鯨魚的最新動作
+- `whales follow --wallets ...` — 自動配對 LM 對應市場 + 下跟單訂單（預設 dry-run）
+
+⚠️ 已知限制：鯨魚最活躍的題目（網球、商品、財報）多半 LM 沒對應 → 跟單訊號**actionable 率約 10-20%**。詳見[鯨魚系統章節](#鯨魚跟單系統)。
 
 ## 額外指令
 
@@ -275,7 +347,10 @@ polymkt/
 - [x] v0.3：Cross-arb 訊號（PM↔LM 價差）
 - [x] v0.4：**Limitless 自動下單**（dry-run + 安全限額 + EIP-712 簽名透過官方 SDK）
 - [x] v0.5a：**Limitless 雙 BID 做市**（單市場、對稱報價）
-- [ ] v0.5b：做市進階防禦（quote skew、PM oracle、自動退出）
+- [x] v0.5b：做市進階防禦（quote skew ✅ + PM oracle ✅ ；自動退出未做）
+- [x] v0.6：**鯨魚跟單系統**（list / watch / follow）
+- [ ] v0.7：自動退出（結算偵測 + 強制清倉）
+- [ ] v0.8：多市場並行做市（共享資本池）
 - [ ] v0.6：鯨魚追蹤（追蹤 Polymarket 上歷史高 ROI 錢包）
 - [ ] v0.7：持倉管理（追蹤已開倉位、自動平倉、停損規則）
 
