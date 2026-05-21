@@ -419,12 +419,39 @@ def lm_place_order_cmd(slug: str, side: str, outcome: str, price: float,
                    "/ blend=PM 60% + LM 40%")
 @click.option("--inventory-skew-pct", type=float, default=0.5,
               help="(v0.5b) 庫存每超出 max 的 10%，把對應方向 bid 拉走多少 pp（預設 0.5）")
+# v0.6 旗標
+@click.option("--microprice/--no-microprice", "use_microprice", default=True,
+              help="(v0.6) 用 microprice（對手側 size 加權）當公平價；預設開")
+@click.option("--toxicity-window", type=int, default=5,
+              help="(v0.6) toxicity 偵測滾動窗口輪數（預設 5）")
+@click.option("--toxicity-imbalance", type=float, default=0.7,
+              help="(v0.6) YES/NO fill 不對稱比 > 此值 → 加寬該側（預設 0.7）")
+@click.option("--toxicity-pm-velocity", type=float, default=0.03,
+              help="(v0.6) PM mid 窗口內漂移 > $ 此值 → 撤所有單（預設 0.03）")
+@click.option("--toxicity-ask-drop", type=float, default=0.02,
+              help="(v0.6) LM YES best ask 窗口內下殺 > $ 此值 → 撤 NO bid（預設 0.02）")
+@click.option("--toxicity-widen-mult", type=float, default=2.0,
+              help="(v0.6) 偵測到 toxicity 時 spread × 此倍數（預設 2.0）")
+@click.option("--unwind-inventory-pct", type=float, default=0.6,
+              help="(v0.6) 庫存超過 max × 此比例就主動掛 SELL（預設 0.6 = 60%）")
+@click.option("--unwind-premium-pct", type=float, default=1.0,
+              help="(v0.6) SELL 報價比 mid 高多少 pp（預設 1.0pp）")
+@click.option("--emergency-close-hours", type=float, default=24.0,
+              help="(v0.6) 距結算 < 此小時數 → 強制 cancel + 市價清倉（預設 24h）")
+@click.option("--no-emergency-close", is_flag=True,
+              help="(v0.6) 停用結算窗口強制清倉（不建議）")
 @click.option("--execute", is_flag=True,
               help="真實下單；不加就只是 dry-run，不會送 API")
 def lm_make_market_cmd(slug: str, capital_usdc: float, quote_size: float,
                        target_profit_pct: float, half_spread_pct: float,
                        max_inventory: float, iter_sleep: int, duration: int,
                        oracle: str, inventory_skew_pct: float,
+                       use_microprice: bool,
+                       toxicity_window: int, toxicity_imbalance: float,
+                       toxicity_pm_velocity: float, toxicity_ask_drop: float,
+                       toxicity_widen_mult: float,
+                       unwind_inventory_pct: float, unwind_premium_pct: float,
+                       emergency_close_hours: float, no_emergency_close: bool,
                        execute: bool) -> None:
     """在指定市場做雙 BID 做市（CTF: BUY YES + BUY NO）。
 
@@ -447,6 +474,16 @@ def lm_make_market_cmd(slug: str, capital_usdc: float, quote_size: float,
         duration_s=duration,
         oracle_mode=oracle,
         inventory_skew_pct=inventory_skew_pct,
+        use_microprice=use_microprice,
+        toxicity_window=toxicity_window,
+        toxicity_imbalance_threshold=toxicity_imbalance,
+        toxicity_pm_velocity_threshold=toxicity_pm_velocity,
+        toxicity_ask_drop_threshold=toxicity_ask_drop,
+        toxicity_widen_multiplier=toxicity_widen_mult,
+        unwind_inventory_pct=unwind_inventory_pct,
+        unwind_premium_pct=unwind_premium_pct,
+        emergency_close_hours=emergency_close_hours,
+        emergency_close_enabled=not no_emergency_close,
     )
 
     if execute:
@@ -468,8 +505,10 @@ def lm_make_market_cmd(slug: str, capital_usdc: float, quote_size: float,
                 console.print(f"[red]無法載入市場 {slug}: {e}[/red]")
                 sys.exit(1)
 
+            hrs = mm.hours_to_resolution()
+            hrs_txt = f"{hrs:.1f}h" if hrs is not None else "未知"
             console.print(Panel(
-                f"[bold]做市啟動 ({'真實' if execute else 'DRY-RUN'})[/bold]\n"
+                f"[bold]做市啟動 v0.6 ({'真實' if execute else 'DRY-RUN'})[/bold]\n"
                 f"市場：{mm.market.get('title', slug)}\n"
                 f"資本上限：${capital_usdc:.0f}  "
                 f"每邊股數：{quote_size:.0f}\n"
@@ -477,17 +516,31 @@ def lm_make_market_cmd(slug: str, capital_usdc: float, quote_size: float,
                 f"報價偏移：±{half_spread_pct:.1f}pp\n"
                 f"庫存上限：{max_inventory:.0f} 股  "
                 f"持續：{duration}s  "
-                f"重評間隔：{iter_sleep}s",
+                f"重評間隔：{iter_sleep}s\n"
+                f"[dim]v0.6: microprice={'on' if use_microprice else 'off'}  "
+                f"toxicity window={toxicity_window}  "
+                f"unwind@={unwind_inventory_pct*100:.0f}%  "
+                f"emergency< {emergency_close_hours:.0f}h  "
+                f"距結算 {hrs_txt}[/dim]",
                 border_style="green" if execute else "yellow",
             ))
 
             def on_iter(n, result):
-                line = (
-                    f"[dim]#{n:02d}[/dim]  "
-                    f"YES @${result.yes_bid_price:.3f} + NO @${result.no_bid_price:.3f}  "
-                    f"(和 ${result.yes_bid_price + result.no_bid_price:.3f})"
-                )
-                console.print(line)
+                if result.emergency_close:
+                    console.print(f"[bold red]#{n:02d}  🚨 緊急清倉[/bold red]")
+                else:
+                    tox = f"[red] tox={result.toxicity_score:.2f}[/red]" if result.toxicity_score > 0 else ""
+                    sells = ""
+                    if result.yes_sell_price > 0:
+                        sells += f"  SELL YES@${result.yes_sell_price:.3f}"
+                    if result.no_sell_price > 0:
+                        sells += f"  SELL NO@${result.no_sell_price:.3f}"
+                    line = (
+                        f"[dim]#{n:02d}[/dim]  "
+                        f"YES @${result.yes_bid_price:.3f} + NO @${result.no_bid_price:.3f}  "
+                        f"(和 ${result.yes_bid_price + result.no_bid_price:.3f}){tox}{sells}"
+                    )
+                    console.print(line)
                 for note in result.notes:
                     console.print(f"      [dim]{note}[/dim]")
 
@@ -500,13 +553,200 @@ def lm_make_market_cmd(slug: str, capital_usdc: float, quote_size: float,
             finally:
                 await tc.close()
 
+        emerg = stats.get("emergency_close")
         console.print(Panel(
-            f"做市結束\n"
+            f"做市結束{' (緊急清倉觸發)' if emerg else ''}\n"
             f"執行 iterations: {stats['iterations']}\n"
             f"累計資本使用: ${stats['capital_used']:.2f}\n"
             f"最後一輪報價: YES ${stats['last_yes_bid']:.3f} / NO ${stats['last_no_bid']:.3f}",
-            border_style="dim",
+            border_style="red" if emerg else "dim",
         ))
+
+    asyncio.run(_run())
+
+
+# ---------- 做市市場排序（v0.6 新增）----------
+
+# 高風險關鍵字 → 接近事件時機波動大,做市風險高
+_NEWS_RISK_KEYWORDS = [
+    # 政治 / 法律
+    "election", "court", "ruling", "verdict", "vote", "primary", "debate",
+    "impeach", "indict", "supreme",
+    # 央行 / 經濟
+    "fed", "fomc", "cpi", "ppi", "gdp", "payroll", "nfp", "jobless",
+    "rate hike", "rate cut", "powell", "ecb",
+    # 公司事件
+    "earnings", "ipo", "merger", "acquisition", "lawsuit",
+    # 體育即時
+    "tonight", "today", "match", "game",
+    # 中文
+    "選舉", "判決", "投票", "央行", "升息", "降息", "通膨", "財報",
+]
+
+
+def _news_risk_score(title: str) -> float:
+    """簡單關鍵字 heuristic：命中越多分數越高（0 = 安全）。"""
+    t = title.lower()
+    return float(sum(1 for kw in _NEWS_RISK_KEYWORDS if kw in t))
+
+
+def _parse_iso(date_str: str | None) -> float | None:
+    """回傳距現在的天數；無法解析 → None。
+
+    Limitless 用兩種格式：ISO（"2026-05-21T..."）和人類可讀（"May 21, 2026"）。
+    """
+    if not date_str:
+        return None
+    from datetime import datetime, timezone
+    s = str(date_str)
+    # 試 ISO
+    try:
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return (dt - datetime.now(timezone.utc)).total_seconds() / 86400
+    except Exception:
+        pass
+    # 試 "May 21, 2026" / "May 21, 2026 12:00 PM" 等
+    for fmt in ("%b %d, %Y", "%B %d, %Y", "%b %d, %Y %I:%M %p", "%B %d, %Y %I:%M %p"):
+        try:
+            dt = datetime.strptime(s, fmt).replace(tzinfo=timezone.utc)
+            return (dt - datetime.now(timezone.utc)).total_seconds() / 86400
+        except ValueError:
+            continue
+    return None
+
+
+@limitless_group.command(name="mm-rank")
+@click.option("--max-markets", type=int, default=500,
+              help="掃描多少個活躍市場（預設 500，越多越慢）")
+@click.option("--min-volume-usd", type=float, default=200.0,
+              help="忽略量低於此值的市場（預設 $200；太冷沒人吃單）")
+@click.option("--min-days", type=float, default=2.0,
+              help="距結算 < N 天的市場過濾掉（避免結算 risk）")
+@click.option("--min-spread-bps", type=int, default=50,
+              help="LM YES spread 小於此值（基點）就不夠寬，跳過。100 bps = 1pp")
+@click.option("--top", type=int, default=15)
+def lm_mm_rank_cmd(max_markets: int, min_volume_usd: float,
+                   min_days: float, min_spread_bps: int, top: int) -> None:
+    """v0.6：把 Limitless 上適合做市的市場排序輸出。
+
+    評分公式：
+      score = spread_pp × (days_to_res / 7) × poly_arb_bonus × (1 + log(1+volume/1000))
+              / (1 + news_risk)
+
+    - spread_pp：YES side bid-ask spread 百分點；越寬越好
+    - days_to_res：距結算天數；越遠越多重掛機會（但 >30 不再加分）
+    - poly_arb_bonus：有 PM 鏡像 +30%（可當 oracle）
+    - volume：log 量級正向加成（避免零量市場）
+    - news_risk：標題命中高風險關鍵字數，當分母懲罰
+    """
+    from .limitless.scanner import LimitlessClient  # 同模組
+    import math
+
+    async def _run():
+        async with LimitlessClient() as lc:
+            with console.status("[cyan]載入活躍市場..."):
+                singles, groups = await lc.fetch_active_markets(max_markets=max_markets)
+
+            # 只看 single CLOB 市場（group 排另一個排序）
+            candidates = [m for m in singles
+                          if m.is_tradeable
+                          and m.volume_usd >= min_volume_usd]
+
+            # 結算過濾
+            with_days = []
+            for m in candidates:
+                d = _parse_iso(m.end_date)
+                if d is None or d < min_days:
+                    continue
+                with_days.append((m, d))
+
+            if not with_days:
+                console.print("[yellow]沒有符合條件的市場[/yellow]")
+                return
+
+            # 批次撈 orderbook（fetch_orderbooks 已有 max_concurrency 限制）
+            slugs = [m.slug for m, _ in with_days]
+            with console.status(f"[cyan]撈 {len(slugs)} 個 orderbook..."):
+                books = await lc.fetch_orderbooks(slugs)
+
+            rows = []
+            for m, days in with_days:
+                ob = books.get(m.slug)
+                if ob is None:
+                    continue
+                yb = ob.yes_best_bid
+                ya = ob.yes_best_ask
+                if not yb or not ya:
+                    continue
+                spread_pp = (ya.price - yb.price) * 100  # 百分點
+                if spread_pp * 100 < min_spread_bps:     # 換算 bps
+                    continue
+                mid = (yb.price + ya.price) / 2
+                if not (0.05 < mid < 0.95):
+                    # 極端市場（已經接近 0 或 1）做市風險不對稱
+                    continue
+
+                # 評分
+                days_factor = min(days, 30) / 7
+                pa_bonus = 1.3 if m.is_poly_arbitrage else 1.0
+                vol_factor = 1 + math.log(1 + m.volume_usd / 1000)
+                news_risk = _news_risk_score(m.title)
+                risk_penalty = 1 + news_risk
+
+                score = spread_pp * days_factor * pa_bonus * vol_factor / risk_penalty
+                rows.append({
+                    "slug": m.slug,
+                    "title": m.title,
+                    "score": score,
+                    "spread_pp": spread_pp,
+                    "mid": mid,
+                    "days": days,
+                    "vol": m.volume_usd,
+                    "pa": m.is_poly_arbitrage,
+                    "news_risk": news_risk,
+                })
+
+            rows.sort(key=lambda r: -r["score"])
+
+            if not rows:
+                console.print("[yellow]沒有 orderbook 雙邊都有報價的市場[/yellow]")
+                return
+
+            t = Table(title=f"做市候選市場 (top {min(top, len(rows))} / 共 {len(rows)})",
+                      show_lines=True)
+            t.add_column("#", width=3)
+            t.add_column("Score", justify="right")
+            t.add_column("Spread", justify="right")
+            t.add_column("Mid", justify="right")
+            t.add_column("Days", justify="right")
+            t.add_column("Vol", justify="right")
+            t.add_column("PA")
+            t.add_column("Risk")
+            t.add_column("Slug", overflow="fold")
+            t.add_column("標題", overflow="fold")
+            for i, r in enumerate(rows[:top], 1):
+                risk_label = "🛑" * int(r["news_risk"]) if r["news_risk"] > 0 else ""
+                t.add_row(
+                    str(i),
+                    f"{r['score']:.2f}",
+                    f"{r['spread_pp']:.2f}pp",
+                    f"${r['mid']:.3f}",
+                    f"{r['days']:.1f}d",
+                    f"${r['vol']:,.0f}",
+                    "🪞" if r["pa"] else "",
+                    risk_label,
+                    r["slug"][:30],
+                    r["title"][:50],
+                )
+            console.print(t)
+            console.print(Panel(
+                "用 top 候選跑做市：\n"
+                "  [bold]polymkt limitless make-market --slug <slug> --oracle pm[/bold]\n"
+                "🪞 = 有 PM 鏡像（強烈建議搭 --oracle pm）；🛑 = 新聞風險關鍵字命中",
+                border_style="dim",
+            ))
 
     asyncio.run(_run())
 
