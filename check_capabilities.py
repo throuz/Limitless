@@ -1,10 +1,4 @@
-"""檢查你目前 Limitless 帳號的 partner capabilities + token scopes。
-
-目的:確認能不能跑 delegated signing(不用私鑰下單)。
-
-跑法:
-  .venv/bin/python check_capabilities.py
-"""
+"""檢查你目前 Limitless 帳號的 partner capabilities + token scopes。"""
 
 import asyncio
 import os
@@ -28,46 +22,45 @@ async def main():
     )
 
     print("=" * 60)
-    print("1. Partner capabilities(看你帳號能拿到什麼 scope)")
+    print("1. List your active API tokens(看 scope!)")
     print("=" * 60)
     try:
-        # 直接打 endpoint
-        r = await client.http.get("/api-tokens/capabilities")
-        print(f"Response: {r}")
+        r = await client.http.get("/auth/api-tokens")
+        print(r)
     except Exception as e:
         print(f"  錯誤: {e}")
 
     print()
     print("=" * 60)
-    print("2. List active tokens(看你目前 token 的 scope)")
+    print("2. List partner accounts(看你是不是 partner)")
     print("=" * 60)
     try:
-        r = await client.http.get("/api-tokens")
-        print(f"Response: {r}")
+        r = await client.http.get("/profiles/partner-accounts")
+        print(r)
     except Exception as e:
         print(f"  錯誤: {e}")
 
     print()
     print("=" * 60)
-    print("3. 你的 portfolio / 持倉(驗證 token 能用)")
+    print("3. 試試 delegated 訂單(會失敗但錯誤訊息會告訴我們缺什麼)")
     print("=" * 60)
     try:
-        from limitless_sdk.portfolio import PortfolioFetcher
-        pf = PortfolioFetcher(client.http)
-        positions = await pf.get_positions()
-        print(f"持倉: {positions}")
-    except Exception as e:
-        print(f"  錯誤: {e}")
+        from limitless_sdk.delegated_orders import DelegatedOrderService
+        from limitless_sdk.types.orders import OrderType, Side
 
-    print()
-    print("=" * 60)
-    print("4. List partner accounts(看你有沒有 server wallet sub-account)")
-    print("=" * 60)
-    try:
-        r = await client.http.get("/partner-accounts")
-        print(f"Response: {r}")
+        d = DelegatedOrderService(client.http)
+        r = await d.create_order(
+            token_id="0",
+            side=Side.BUY,
+            order_type=OrderType.GTC,
+            market_slug="invalid-test-slug",
+            on_behalf_of=1,
+            price=0.5,
+            size=10,
+        )
+        print(r)
     except Exception as e:
-        print(f"  錯誤: {e}")
+        print(f"  錯誤(預期): {type(e).__name__}: {e}")
 
     try:
         await client.close()
