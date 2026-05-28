@@ -111,11 +111,11 @@ class LimitlessTradingClient:
         """從 .env 讀取所有設定，並套用 SafetyLimits.from_env。"""
         token_id = os.environ.get("LIMITLESS_API_TOKEN_ID")
         secret = os.environ.get("LIMITLESS_API_SECRET")
-        priv = os.environ.get("POLYGON_PRIVATE_KEY") or os.environ.get("BASE_PRIVATE_KEY")
+        priv = os.environ.get("BASE_PRIVATE_KEY")
         if not (token_id and secret and priv):
             raise RuntimeError(
-                "缺少必要環境變數：LIMITLESS_API_TOKEN_ID, LIMITLESS_API_SECRET, "
-                "POLYGON_PRIVATE_KEY (or BASE_PRIVATE_KEY)。\n"
+                "缺少必要環境變數:LIMITLESS_API_TOKEN_ID, LIMITLESS_API_SECRET, "
+                "BASE_PRIVATE_KEY。\n"
                 "請參考 .env.example 設定。"
             )
         return cls(

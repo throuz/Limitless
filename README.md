@@ -49,7 +49,7 @@ cp .env.example .env
 # 編輯 .env：
 LIMITLESS_API_TOKEN_ID=...
 LIMITLESS_API_SECRET=...
-POLYGON_PRIVATE_KEY=0x...   # 獨立 wallet 的私鑰（也適用於 Base）
+BASE_PRIVATE_KEY=0x...   # 獨立 wallet 的私鑰(0x + 64 hex,共 66 字元)
 ```
 
 ### 3. 跑 dry-run 看看會做什麼
