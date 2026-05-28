@@ -751,6 +751,149 @@ def lm_mm_rank_cmd(max_markets: int, min_volume_usd: float,
     asyncio.run(_run())
 
 
+# ---------- v0.7：24/7 自動調度 mm-loop ----------
+
+@limitless_group.command(name="mm-loop")
+@click.option("--total-capital", type=float, default=500.0,
+              help="全部市場合計資本上限（USDC）")
+@click.option("--max-positions", type=int, default=3,
+              help="同時做幾個市場")
+@click.option("--capital-per-market", type=float, default=100.0,
+              help="單一市場最多多少資本")
+@click.option("--quote-size", type=float, default=10.0)
+@click.option("--target-profit-pct", type=float, default=4.0)
+@click.option("--half-spread-pct", type=float, default=1.0)
+@click.option("--max-inventory", type=float, default=30.0)
+@click.option("--rank-refresh-s", type=int, default=3600,
+              help="多久重新跑一次 mm-rank（預設 1 小時）")
+@click.option("--rank-min-volume", type=float, default=200.0)
+@click.option("--rank-min-days", type=float, default=2.0,
+              help="距結算 < N 天就不挑（預設 2 天，給 emergency window 留空間）")
+@click.option("--rank-min-spread-bps", type=int, default=100)
+@click.option("--rank-max-news-risk", type=float, default=2.0)
+@click.option("--iter-sleep-s", type=float, default=30.0)
+@click.option("--oracle", type=click.Choice(["lm", "pm", "blend"]), default="pm")
+@click.option("--microprice/--no-microprice", "use_microprice", default=True)
+@click.option("--emergency-close-hours", type=float, default=24.0)
+@click.option("--execute", is_flag=True,
+              help="真實下單；不加就只是 dry-run")
+@click.option("--from-env", is_flag=True,
+              help="忽略以上 flag，全部從環境變數讀（給 AWS / 容器部署用）")
+def lm_mm_loop_cmd(total_capital: float, max_positions: int, capital_per_market: float,
+                   quote_size: float, target_profit_pct: float, half_spread_pct: float,
+                   max_inventory: float, rank_refresh_s: int, rank_min_volume: float,
+                   rank_min_days: float, rank_min_spread_bps: int,
+                   rank_max_news_risk: float, iter_sleep_s: float,
+                   oracle: str, use_microprice: bool,
+                   emergency_close_hours: float, execute: bool,
+                   from_env: bool) -> None:
+    """v0.7：24/7 自動調度做市。
+
+    自動跑 mm-rank、挑 top N 市場、各起一個 MarketMaker 並行做市、
+    結算或觸發 emergency_close 後自動換下一個市場。
+
+    [yellow]預設 dry-run[/yellow]。加 --execute 或設 LIMITLESS_EXECUTE=1 才真實下單。
+
+    收到 SIGTERM / SIGINT → 全部 cancel + 收乾淨後退出（給容器 graceful shutdown 用）。
+    """
+    from .limitless.mm_loop import MMLoop, MMLoopConfig, install_signal_handlers
+    from .limitless.trading import LimitlessTradingClient
+
+    if execute:
+        os.environ["LIMITLESS_EXECUTE"] = "1"
+
+    if from_env:
+        cfg = MMLoopConfig.from_env()
+    else:
+        cfg = MMLoopConfig(
+            total_capital_usdc=total_capital,
+            max_positions=max_positions,
+            capital_per_market=capital_per_market,
+            quote_size_shares=quote_size,
+            target_profit_pct=target_profit_pct,
+            half_spread_pct=half_spread_pct,
+            max_inventory_shares=max_inventory,
+            rank_refresh_seconds=rank_refresh_s,
+            rank_min_volume_usd=rank_min_volume,
+            rank_min_days=rank_min_days,
+            rank_min_spread_bps=rank_min_spread_bps,
+            rank_max_news_risk=rank_max_news_risk,
+            iteration_sleep_s=iter_sleep_s,
+            oracle_mode=oracle,
+            use_microprice=use_microprice,
+            emergency_close_hours=emergency_close_hours,
+            execute=execute or os.environ.get("LIMITLESS_EXECUTE") == "1",
+        )
+
+    async def _run():
+        try:
+            tc = LimitlessTradingClient.from_env()
+        except RuntimeError as e:
+            console.print(f"[red]{e}[/red]")
+            sys.exit(1)
+
+        async with LimitlessClient() as lc:
+            loop = MMLoop(cfg, tc, lc, on_event=_event_printer)
+            install_signal_handlers(loop)
+
+            console.print(Panel(
+                f"[bold]mm-loop v0.7 ({'真實' if cfg.execute else 'DRY-RUN'})[/bold]\n"
+                f"全域資本：${cfg.total_capital_usdc:.0f}  並行市場：{cfg.max_positions}\n"
+                f"每市場：${cfg.capital_per_market:.0f}  股數：{cfg.quote_size_shares:.0f}  ROI {cfg.target_profit_pct:.1f}%\n"
+                f"oracle={cfg.oracle_mode}  microprice={cfg.use_microprice}  emergency<{cfg.emergency_close_hours:.0f}h\n"
+                f"rank refresh: {cfg.rank_refresh_seconds}s  min vol ${cfg.rank_min_volume_usd:.0f}  min days {cfg.rank_min_days}\n"
+                f"[dim]Ctrl-C / SIGTERM → graceful shutdown[/dim]",
+                border_style="green" if cfg.execute else "yellow",
+            ))
+
+            try:
+                stats = await loop.main_loop()
+            finally:
+                await tc.close()
+
+        console.print(Panel(
+            f"[bold]mm-loop 結束[/bold]\n"
+            f"完成 sessions: {stats.sessions_completed}  "
+            f"emergency: {stats.sessions_emergency}\n"
+            f"總 iterations: {stats.total_iterations}",
+            border_style="dim",
+        ))
+
+    asyncio.run(_run())
+
+
+def _event_printer(kind: str, data: dict) -> None:
+    """mm-loop 的事件 → 結構化文字。AWS 上靠 CloudWatch 抓 stdout。"""
+    from datetime import datetime
+    ts = datetime.utcnow().strftime("%H:%M:%S")
+    if kind == "loop_start":
+        console.print(f"[{ts}] [green]loop_start[/green] max={data['max_positions']} cap=${data['total_capital']:.0f} execute={data['execute']}")
+    elif kind == "rank_picked":
+        console.print(f"[{ts}] [cyan]rank_picked[/cyan] +{data['count']} {data['slugs']}")
+    elif kind == "rank_empty":
+        console.print(f"[{ts}] [yellow]rank_empty[/yellow] 沒有符合條件的市場")
+    elif kind == "session_start":
+        console.print(f"[{ts}] [green]session_start[/green] {data['slug'][:30]} cap=${data['capital']:.0f} :: {data['title'][:60]}")
+    elif kind == "session_end":
+        tag = "[red]emergency[/red]" if data.get("emergency") else "[dim]normal[/dim]"
+        console.print(f"[{ts}] {tag} session_end {data['slug'][:30]} iters={data['iterations']} cap=${data['capital_used']:.2f}")
+    elif kind == "session_error":
+        console.print(f"[{ts}] [red]session_error[/red] {data['slug'][:30]} phase={data['phase']} {data['error']}")
+    elif kind == "iteration":
+        # 為了不洗版,只在 toxicity > 0 / emergency / 顯著事件時印
+        if data.get("emergency"):
+            console.print(f"[{ts}] [red]🚨 emergency[/red] {data['slug'][:30]} iter#{data['n']}")
+        elif data.get("toxicity", 0) > 0:
+            console.print(f"[{ts}] [yellow]tox[/yellow] {data['slug'][:30]} #{data['n']} tox={data['toxicity']:.2f}")
+        # 其他正常 iteration 不印,留給 mm-rank 累計統計
+    elif kind == "shutdown_start":
+        console.print(f"[{ts}] [yellow]shutdown_start[/yellow] active={data['active']}")
+    elif kind == "shutdown_done":
+        console.print(f"[{ts}] [yellow]shutdown_done[/yellow] completed={data['completed']} emergency={data['emergency']}")
+    elif kind == "skip_no_capital":
+        console.print(f"[{ts}] [dim]skip_no_capital[/dim] {data['slug'][:30]} remaining=${data['remaining']:.2f}")
+
+
 # ---------- 跨平台價差 ----------
 
 @click.command(name="crossarb")

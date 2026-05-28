@@ -1,0 +1,12 @@
+.venv
+.git
+.env
+.env.*
+*.pyc
+__pycache__
+*.egg-info
+.pytest_cache
+.mypy_cache
+infra/cdk.out
+infra/.venv
+.DS_Store
