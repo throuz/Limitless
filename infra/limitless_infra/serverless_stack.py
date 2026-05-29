@@ -111,10 +111,10 @@ class LimitlessMmLoopServerlessStack(Stack):
             "DDB_TABLE_NAME": state_table.table_name,
             "LIMITLESS_EXECUTE": "1" if execute_real_orders else "0",
             "LIMITLESS_MAX_PER_ORDER": "30",
-            "LIMITLESS_MAX_PER_SESSION": "90",
-            "MM_LOOP_TOTAL_CAPITAL": "90",   # 配合 Limitless 真實 Available (~$92)
+            "LIMITLESS_MAX_PER_SESSION": "500",      # 安全上限,實際 cap 由鏈上動態決定
+            "MM_LOOP_TOTAL_CAPITAL": "100",          # 只在 chain read 失敗時 fallback
             "MM_LOOP_MAX_POSITIONS": "3",
-            "MM_LOOP_CAPITAL_PER_MARKET": "30",  # $90 / 3 markets = $30 each
+            "MM_LOOP_CAPITAL_PER_MARKET": "33",      # fallback only(=total/positions)
             "MM_LOOP_QUOTE_SIZE": "10",
             "MM_LOOP_TARGET_PROFIT_PCT": "4",
             "MM_LOOP_HALF_SPREAD_PCT": "1",

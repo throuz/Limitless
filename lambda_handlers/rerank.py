@@ -89,6 +89,27 @@ async def _run(event: dict, context) -> dict:
 
     active = load_active(table)
     g = load_global(table)
+
+    # 鏈上 USDC 動態 cap(每次 rerank 更新一次)→ 取代 env 寫死
+    try:
+        from limitless.chain import get_usdc_balance, wallet_address_from_priv
+        addr = wallet_address_from_priv()
+        if addr:
+            bal = await get_usdc_balance(addr)
+            if bal is not None and bal > 0:
+                # 保留 10% buffer 給 fee/slippage,避免 over-commit
+                new_cap = round(bal * 0.9, 2)
+                old_cap = g.dynamic_total_cap
+                g.dynamic_total_cap = new_cap
+                g.dynamic_cap_updated_at = int(time.time())
+                log("rerank_dynamic_cap_updated",
+                    wallet=addr, chain_usdc=bal,
+                    new_cap=new_cap, old_cap=old_cap)
+                # 立刻寫回 DDB,避免後續早返回路徑遺漏
+                save_global(table, g)
+    except Exception as e:
+        log("rerank_dynamic_cap_error", error=str(e))
+
     removed_settled = []
     removed_exhausted = []
     capital_freed = 0.0   # 累計從移除市場「歸還」到 global cap 的額度

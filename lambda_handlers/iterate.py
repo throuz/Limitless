@@ -66,11 +66,13 @@ async def _run(event: dict, context) -> dict:
         log("iterate_skip", reason="no_active_markets")
         return {"status": "no_active", "processed": 0}
 
-    # 全域資本檢查
-    remaining_global = max(0.0, cfg.total_capital_usdc - g.total_capital_used)
+    # 全域資本檢查:優先用 dynamic_total_cap(rerank 從鏈上讀的),fallback 到 env
+    effective_total_cap = g.dynamic_total_cap if g.dynamic_total_cap > 0 else cfg.total_capital_usdc
+    remaining_global = max(0.0, effective_total_cap - g.total_capital_used)
     if remaining_global < 5.0:
         log("iterate_skip", reason="global_capital_exhausted",
-            used=g.total_capital_used, cap=cfg.total_capital_usdc)
+            used=g.total_capital_used, cap=effective_total_cap,
+            cap_source="dynamic" if g.dynamic_total_cap > 0 else "env")
         return {"status": "global_exhausted", "processed": 0}
 
     # 初始化交易 + 讀取 client(共用整個 invocation)
@@ -99,7 +101,7 @@ async def _run(event: dict, context) -> dict:
                     if slug in active.slugs:
                         active.slugs.remove(slug)
                     delete_market(table, slug)
-                remaining_global = max(0.0, cfg.total_capital_usdc - g.total_capital_used)
+                remaining_global = max(0.0, effective_total_cap - g.total_capital_used)
                 if remaining_global < 5.0:
                     log("iterate_break", reason="global_capital_exhausted_mid_loop")
                     break
@@ -114,7 +116,7 @@ async def _run(event: dict, context) -> dict:
 
     log("iterate_done", processed=processed, emergencies=emergencies,
         errors=errors, active=len(active.slugs),
-        global_used=g.total_capital_used, global_cap=cfg.total_capital_usdc)
+        global_used=g.total_capital_used, global_cap=effective_total_cap)
     return {
         "status": "ok",
         "processed": processed,
@@ -142,8 +144,10 @@ async def _iterate_one_market(slug: str, table, tc, lm, cfg: ServerlessCfg, g, r
             pass
         return {"exhausted": True}
 
-    # 計算這個市場還能用多少資本
-    per_market_remaining = max(0.0, cfg.capital_per_market - state.capital_used)
+    # 計算這個市場還能用多少資本(per_market 也跟著動態 cap 走)
+    effective_total = g.dynamic_total_cap if g.dynamic_total_cap > 0 else cfg.total_capital_usdc
+    effective_per_market = effective_total / max(cfg.max_positions, 1)
+    per_market_remaining = max(0.0, effective_per_market - state.capital_used)
     cap_this_market = min(per_market_remaining, remaining_global)
     # winddown 改基於 state.exhausted 旗標(持久),只要還有倉位就維持 SELL only
     # 不再依 cap_this_market 比較(SELL fill 會降 cap,但 winddown 應持續到清光)
@@ -156,7 +160,7 @@ async def _iterate_one_market(slug: str, table, tc, lm, cfg: ServerlessCfg, g, r
         if inv_hint > 0.01:
             # cap 剛達上限,還沒標 exhausted → 標起來
             log("market_capital_exhausted_winddown", slug=slug,
-                used=state.capital_used, cap=cfg.capital_per_market,
+                used=state.capital_used, cap=effective_per_market,
                 inv_hint=inv_hint)
             state.exhausted = True
             winddown_mode = True
@@ -164,7 +168,7 @@ async def _iterate_one_market(slug: str, table, tc, lm, cfg: ServerlessCfg, g, r
             save_market(table, state)
         else:
             log("market_capital_exhausted_no_inventory", slug=slug,
-                used=state.capital_used, cap=cfg.capital_per_market)
+                used=state.capital_used, cap=effective_per_market)
             try:
                 await tc._order_client.cancel_all(slug)
                 log("market_orders_cancelled_on_exhaust", slug=slug)

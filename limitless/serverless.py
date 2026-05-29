@@ -85,6 +85,8 @@ class GlobalState:
     last_rerank_at: int = 0
     sessions_completed: int = 0
     sessions_emergency: int = 0
+    dynamic_total_cap: float = 0.0       # 鏈上 USDC × safety_buffer,rerank 更新
+    dynamic_cap_updated_at: int = 0      # 最後一次更新時間戳
 
 
 @dataclass
@@ -133,6 +135,8 @@ def load_global(table) -> GlobalState:
         last_rerank_at=int(r.get("last_rerank_at", 0)),
         sessions_completed=int(r.get("sessions_completed", 0)),
         sessions_emergency=int(r.get("sessions_emergency", 0)),
+        dynamic_total_cap=float(r.get("dynamic_total_cap", 0.0)),
+        dynamic_cap_updated_at=int(r.get("dynamic_cap_updated_at", 0)),
     )
 
 
