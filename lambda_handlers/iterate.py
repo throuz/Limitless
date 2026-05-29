@@ -91,12 +91,14 @@ async def _run(event: dict, context) -> dict:
                 processed += 1
                 if res.get("emergency"):
                     emergencies += 1
-                    # 從 active 移除
+                    # 從 active 移除 + 清 DDB state(否則永久殘留)
                     if slug in active.slugs:
                         active.slugs.remove(slug)
+                    delete_market(table, slug)
                 if res.get("exhausted"):
                     if slug in active.slugs:
                         active.slugs.remove(slug)
+                    delete_market(table, slug)
                 remaining_global = max(0.0, cfg.total_capital_usdc - g.total_capital_used)
                 if remaining_global < 5.0:
                     log("iterate_break", reason="global_capital_exhausted_mid_loop")
