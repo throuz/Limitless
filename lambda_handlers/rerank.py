@@ -115,6 +115,10 @@ async def _run(event: dict, context) -> dict:
         log("rerank_cleanup",
             settled=removed_settled, exhausted=removed_exhausted,
             remaining=len(active.slugs))
+        try:
+            notify.markets_removed(removed_settled, removed_exhausted)
+        except Exception:
+            pass
 
     # 2. 看缺幾個
     deficit = cfg.max_positions - len(active.slugs)
@@ -201,6 +205,10 @@ async def _run(event: dict, context) -> dict:
     log("rerank_picked",
         added=len(new_slugs), active_total=len(active.slugs),
         picks=picked_meta)
+    try:
+        notify.markets_added(picked_meta)
+    except Exception:
+        pass
     return {
         "status": "ok",
         "added": len(new_slugs),

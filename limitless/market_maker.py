@@ -566,10 +566,24 @@ class MarketMaker:
             pm_yes = await self._try_fetch_pm_mirror_yes()
             self._record_pm_mid(pm_yes)
 
-        # 2. 庫存
+        # 2. 庫存(偵測 fill = 庫存增加,在 _record_fill 更新前抓 delta)
         inv = await self.fetch_inventory()
         if inv is not None:
             notes.append(f"庫存：YES={inv.yes_shares:.1f}, NO={inv.no_shares:.1f}")
+            yes_delta = inv.yes_shares - self._tox.last_yes_inv
+            no_delta = inv.no_shares - self._tox.last_no_inv
+            if yes_delta > 0.01:
+                notes.append(f"  📊 YES fill +{yes_delta:.1f} 股")
+                try:
+                    notify.fill_detected(self.cfg.slug, "YES", yes_delta, yes_mid)
+                except Exception:
+                    pass
+            if no_delta > 0.01:
+                notes.append(f"  📊 NO fill +{no_delta:.1f} 股")
+                try:
+                    notify.fill_detected(self.cfg.slug, "NO", no_delta, no_mid)
+                except Exception:
+                    pass
             self._record_fill(inv)
         else:
             self._record_fill(None)
@@ -578,6 +592,11 @@ class MarketMaker:
         tox = self.assess_toxicity()
         if tox.reasons:
             notes.append(f"🛑 toxicity={tox.score:.2f}: " + " | ".join(tox.reasons))
+            # Telegram 通知:toxicity 觸發是罕見大事
+            try:
+                notify.toxicity_detected(self.cfg.slug, tox.score, tox.reasons)
+            except Exception:
+                pass
         elif tox.score > 0:
             notes.append(f"toxicity={tox.score:.2f}")
 

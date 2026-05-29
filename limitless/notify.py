@@ -136,3 +136,53 @@ def boot(execute: bool, capital: float, max_positions: int) -> None:
         f"全域資本:${capital:.0f}\n"
         f"並行市場:{max_positions}"
     )
+
+
+def fill_detected(slug: str, outcome: str, shares: float, price: float) -> None:
+    """偵測到單筆成交(從庫存 delta 推算)。"""
+    icon = "🟢" if outcome == "YES" else "🔵"
+    send(
+        f"{icon} <b>{outcome} 成交</b>\n"
+        f"市場:<code>{slug[:50]}</code>\n"
+        f"成交:{shares:.1f} 股 @ ${price:.3f}\n"
+        f"金額:${shares * price:.2f}"
+    )
+
+
+def toxicity_detected(slug: str, score: float, reasons: list) -> None:
+    """Toxicity 偵測觸發(逆選擇風險訊號)。"""
+    body = (
+        f"⚠️ <b>Toxicity 偵測</b>\n"
+        f"市場:<code>{slug[:50]}</code>\n"
+        f"score:{score:.2f}\n"
+        f"原因:" + " | ".join(reasons[:3])
+    )
+    send(body)
+
+
+def markets_added(picks: list) -> None:
+    """Rerank 挑了新市場。picks 是 [{slug, title, score}, ...]"""
+    if not picks:
+        return
+    body = f"🆕 <b>新增 {len(picks)} 個市場</b>\n"
+    for p in picks[:5]:
+        title = (p.get("title") or p.get("slug", ""))[:50]
+        score = p.get("score", 0)
+        body += f"  • {title} ({score:.1f})\n"
+    send(body)
+
+
+def markets_removed(settled: list, exhausted: list) -> None:
+    """Rerank 移除市場(結算 或 資本耗盡)。"""
+    if not settled and not exhausted:
+        return
+    body = "🗑 <b>移除市場</b>\n"
+    if settled:
+        body += f"已結算:\n"
+        for s in settled[:5]:
+            body += f"  • <code>{s[:50]}</code>\n"
+    if exhausted:
+        body += f"資本耗盡:\n"
+        for s in exhausted[:5]:
+            body += f"  • <code>{s[:50]}</code>\n"
+    send(body)
