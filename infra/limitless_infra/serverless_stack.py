@@ -67,7 +67,7 @@ class LimitlessMmLoopServerlessStack(Stack):
         construct_id: str,
         *,
         execute_real_orders: bool = False,
-        iteration_seconds: int = 120,
+        iteration_seconds: int = 300,
         rerank_minutes: int = 60,
         alarm_email: str | None = None,
         **kwargs,

@@ -115,6 +115,11 @@ class MarketState:
     exhausted: bool = False             # 資本用盡標記
     created_at: int = 0
     last_iter_at: int = 0
+    # 「上次成功掛單時的價」— 用來判斷是否該重新掛
+    last_quoted_yes_bid: float = 0.0
+    last_quoted_no_bid: float = 0.0
+    last_quoted_yes_sell: float = 0.0
+    last_quoted_no_sell: float = 0.0
 
 
 # ---------- DynamoDB 操作 ----------
@@ -208,6 +213,10 @@ def load_market(table, slug: str) -> MarketState | None:
         exhausted=bool(r.get("exhausted", False)),
         created_at=int(r.get("created_at", 0)),
         last_iter_at=int(r.get("last_iter_at", 0)),
+        last_quoted_yes_bid=float(r.get("last_quoted_yes_bid", 0.0)),
+        last_quoted_no_bid=float(r.get("last_quoted_no_bid", 0.0)),
+        last_quoted_yes_sell=float(r.get("last_quoted_yes_sell", 0.0)),
+        last_quoted_no_sell=float(r.get("last_quoted_no_sell", 0.0)),
     )
 
 

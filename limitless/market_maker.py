@@ -155,6 +155,11 @@ class MarketMaker:
         self._tox = ToxicityState()
         self._tox.yes_fills.extend([0.0] * config.toxicity_window)
         self._tox.no_fills.extend([0.0] * config.toxicity_window)
+        # 上次成功掛單時的價(0=從未掛過 / 需要 force requote)
+        self._last_quoted_yes_bid = 0.0
+        self._last_quoted_no_bid = 0.0
+        self._last_quoted_yes_sell = 0.0
+        self._last_quoted_no_sell = 0.0
 
     async def init_market(self) -> None:
         """抓市場 metadata，取得 yes_token / no_token / expirationDate。"""
@@ -551,8 +556,32 @@ class MarketMaker:
 
     # ---------- 主 iterate ----------
 
+    def _should_requote(self, new_yes_bid: float, new_no_bid: float,
+                        tox: "ToxicityAssessment") -> tuple[bool, str]:
+        """判斷本輪是否需要撤舊單重掛。
+
+        Skip 條件:首次掛單為 False / 本輪有 fill / toxicity 觸發 pull / 價格偏差 > 門檻 → 都要重掛。
+        其他情況保留現單,連 cancel_all 都不打,完全 no-op。
+        """
+        if self._last_quoted_yes_bid == 0 or self._last_quoted_no_bid == 0:
+            return True, "first_quote"
+        if getattr(self, "_fills_this_iter", False):
+            return True, "fills_detected"
+        if tox.pull_yes or tox.pull_no:
+            return True, "toxicity_pull"
+        if tox.yes_spread_mult > 1.001 or tox.no_spread_mult > 1.001:
+            return True, "toxicity_widen"
+
+        thresh = self.cfg.min_diff_for_requote_pct / 100
+        yes_diff = abs(new_yes_bid - self._last_quoted_yes_bid) / max(self._last_quoted_yes_bid, 0.01)
+        no_diff = abs(new_no_bid - self._last_quoted_no_bid) / max(self._last_quoted_no_bid, 0.01)
+        if yes_diff > thresh or no_diff > thresh:
+            return True, f"price_moved (yes={yes_diff*100:.2f}%, no={no_diff*100:.2f}%)"
+        return False, "prices_stable"
+
     async def iterate(self) -> IterationResult:
         notes: list[str] = []
+        self._fills_this_iter = False  # 每輪重置;fill 偵測會設 True
 
         # 0. 結算偵測（最優先）
         if self.is_emergency_window():
@@ -600,6 +629,8 @@ class MarketMaker:
             notes.append(f"庫存：YES={inv.yes_shares:.1f}, NO={inv.no_shares:.1f}")
             yes_delta = inv.yes_shares - self._tox.last_yes_inv
             no_delta = inv.no_shares - self._tox.last_no_inv
+            if abs(yes_delta) > 0.01 or abs(no_delta) > 0.01:
+                self._fills_this_iter = True   # 給 _should_requote 用,fill 後一定重掛
 
             # BUY fill(庫存增加)→ 真實扣 cap_used(實際 USDC 流出)
             if yes_delta > 0.01:
@@ -683,7 +714,28 @@ class MarketMaker:
             notes.append(f"⚠️ 累計資本 ${self._capital_used:.2f} + 本輪 ${notional_buys:.2f} > ${self.cfg.capital_usdc}，跳過 BUY")
             skip_buys = True
 
-        # 7. 取消舊單（一次性）
+        # 7a. 決定是否真的要撤舊掛新(沒事就 no-op,保留 maker queue position)
+        should_rq, rq_reason = self._should_requote(yes_bid, no_bid, tox)
+        if not should_rq:
+            notes.append(
+                f"⏸ 保留現單(reason={rq_reason}, "
+                f"上次 YES=${self._last_quoted_yes_bid:.3f} NO=${self._last_quoted_no_bid:.3f})"
+            )
+            return IterationResult(
+                yes_bid_price=self._last_quoted_yes_bid,
+                no_bid_price=self._last_quoted_no_bid,
+                yes_order_accepted=True,
+                no_order_accepted=True,
+                yes_sell_price=self._last_quoted_yes_sell,
+                no_sell_price=self._last_quoted_no_sell,
+                yes_sell_accepted=bool(self._last_quoted_yes_sell > 0),
+                no_sell_accepted=bool(self._last_quoted_no_sell > 0),
+                toxicity_score=tox.score,
+                notes=notes,
+            )
+
+        # 7b. 真的要重掛 — 取消舊單(一次性)
+        notes.append(f"🔄 重新報價(reason={rq_reason})")
         await self.cancel_all()
 
         yes_bid_accepted = False
@@ -719,7 +771,18 @@ class MarketMaker:
             # GTC post_only 訂單只是「掛在 book 上」,USDC 沒真實流出。
             # 真實扣款只發生在「對手吃單,我們真的拿到 share」時 → 已在 BUY fill 偵測加上(line 605-619)。
 
+            # 記錄「實際掛上書的價」,供下輪 _should_requote 比對
+            self._last_quoted_yes_bid = yes_bid if yes_bid_accepted else 0.0
+            self._last_quoted_no_bid = no_bid if no_bid_accepted else 0.0
+        else:
+            # skip_buys = True 時,沒掛 BUY,清掉 last_quoted(下輪會 force requote)
+            self._last_quoted_yes_bid = 0.0
+            self._last_quoted_no_bid = 0.0
+
         # 9. 主動 SELL 清庫存
+        # 先清 last_quoted_sell,後續成功 place 才會填回(對應 cancel_all 已撤所有 SELL 的事實)
+        self._last_quoted_yes_sell = 0.0
+        self._last_quoted_no_sell = 0.0
         yes_sell_price = no_sell_price = 0.0
         yes_sell_accepted = no_sell_accepted = False
         if inv is not None:
@@ -736,6 +799,8 @@ class MarketMaker:
                 res = await self.tc.place_order(req)
                 yes_sell_price = yes_sell
                 yes_sell_accepted = res.accepted
+                if res.accepted:
+                    self._last_quoted_yes_sell = yes_sell
                 notes.append(f"  SELL YES @${yes_sell:.3f} × {size:.1f} {'OK' if res.accepted else 'REJ:' + (res.error or '?')} (清庫存)")
 
             if no_sell is not None and inv.no_shares > 0:
@@ -748,6 +813,8 @@ class MarketMaker:
                 res = await self.tc.place_order(req)
                 no_sell_price = no_sell
                 no_sell_accepted = res.accepted
+                if res.accepted:
+                    self._last_quoted_no_sell = no_sell
                 notes.append(f"  SELL NO  @${no_sell:.3f} × {size:.1f} {'OK' if res.accepted else 'REJ:' + (res.error or '?')} (清庫存)")
 
         # 10. PnL 紀錄(v0.9)— 偵測 fills + 寫 iteration snapshot

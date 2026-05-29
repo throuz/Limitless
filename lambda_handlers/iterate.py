@@ -217,6 +217,11 @@ async def _iterate_one_market(slug: str, table, tc, lm, cfg: ServerlessCfg, g, r
     mm._tox = deserialize_tox(state.tox, window=10)
     if state.pm_match_computed:
         mm._pm_match_cache = state.pm_match_cache   # 可能是 None(沒鏡像),但已嘗試過
+    # 上次掛單時的價(讓 _should_requote 跨 invocation 比對)
+    mm._last_quoted_yes_bid = state.last_quoted_yes_bid
+    mm._last_quoted_no_bid = state.last_quoted_no_bid
+    mm._last_quoted_yes_sell = state.last_quoted_yes_sell
+    mm._last_quoted_no_sell = state.last_quoted_no_sell
 
     # 載入或補抓 market metadata
     if state.yes_token and state.no_token:
@@ -246,6 +251,10 @@ async def _iterate_one_market(slug: str, table, tc, lm, cfg: ServerlessCfg, g, r
     state.tox = serialize_tox(mm._tox)
     state.iteration_count += 1
     state.last_iter_at = int(time.time())
+    state.last_quoted_yes_bid = mm._last_quoted_yes_bid
+    state.last_quoted_no_bid = mm._last_quoted_no_bid
+    state.last_quoted_yes_sell = mm._last_quoted_yes_sell
+    state.last_quoted_no_sell = mm._last_quoted_no_sell
     if hasattr(mm, "_pm_match_cache"):
         state.pm_match_cache = mm._pm_match_cache
         state.pm_match_computed = True
