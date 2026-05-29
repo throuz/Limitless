@@ -129,6 +129,11 @@ async def _iterate_one_market(slug: str, table, tc, lm, cfg: ServerlessCfg, g, r
         state = MarketState(slug=slug, created_at=int(time.time()))
 
     if state.exhausted:
+        # 已標記但可能還有殘餘訂單(上次 iterate 沒清乾淨)
+        try:
+            await tc._order_client.cancel_all(slug)
+        except Exception:
+            pass
         return {"exhausted": True}
 
     # 計算這個市場還能用多少資本
@@ -137,6 +142,12 @@ async def _iterate_one_market(slug: str, table, tc, lm, cfg: ServerlessCfg, g, r
     if cap_this_market < 5.0:
         log("market_capital_exhausted", slug=slug, used=state.capital_used,
             cap=cfg.capital_per_market)
+        # 標記 exhausted 前,先撤這個市場上所有殘餘訂單
+        try:
+            await tc._order_client.cancel_all(slug)
+            log("market_orders_cancelled_on_exhaust", slug=slug)
+        except Exception as e:
+            log("market_cancel_error", slug=slug, error=str(e))
         state.exhausted = True
         save_market(table, state)
         return {"exhausted": True}

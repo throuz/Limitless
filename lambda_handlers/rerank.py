@@ -89,22 +89,42 @@ async def _run(event: dict, context) -> dict:
     removed_settled = []
     removed_exhausted = []
 
+    # 準備 trading client 給 cancel_all 用(無認證時 cancel 步驟 silent skip)
+    tc = None
+    try:
+        from limitless.trading import LimitlessTradingClient
+        tc = LimitlessTradingClient.from_env()
+    except Exception as e:
+        log("rerank_no_trading_creds", error=str(e))
+
+    async def _cancel_orders(slug: str, reason: str) -> None:
+        """被移除市場上的殘餘訂單也要撤掉(否則仍會被吃)。"""
+        if tc is None:
+            return
+        try:
+            r = await tc._order_client.cancel_all(slug)
+            log("rerank_cancelled_orders", slug=slug, reason=reason, result=str(r)[:200])
+        except Exception as e:
+            log("rerank_cancel_error", slug=slug, error=str(e))
+
     # 1. 清理已結算 / 已 exhausted 的市場
     keep_slugs = []
     for slug in active.slugs:
         st = load_market(table, slug)
         if st is None:
             log("rerank_cleanup_missing", slug=slug)
+            await _cancel_orders(slug, "missing_state")
             continue
         if st.exhausted:
             removed_exhausted.append(slug)
+            await _cancel_orders(slug, "exhausted")
             delete_market(table, slug)
             continue
         if st.expiration_date:
             d = _parse_days(st.expiration_date)
-            # < 0 = 已過期;< emergency_hours/24 = 太接近結算,讓 iterate 自己 emergency_close
             if d is not None and d < 0:
                 removed_settled.append(slug)
+                await _cancel_orders(slug, "settled")
                 delete_market(table, slug)
                 continue
         keep_slugs.append(slug)
@@ -209,6 +229,14 @@ async def _run(event: dict, context) -> dict:
         notify.markets_added(picked_meta)
     except Exception:
         pass
+
+    # 關閉 trading client
+    if tc is not None:
+        try:
+            await tc.close()
+        except Exception:
+            pass
+
     return {
         "status": "ok",
         "added": len(new_slugs),
