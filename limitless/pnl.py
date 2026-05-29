@@ -33,6 +33,9 @@ DB_PATH = Path(
     or str(Path.home() / ".limitless" / "pnl.db")
 )
 
+# Lambda 檔案系統唯讀 → 全面 skip 寫入(state 已存 DynamoDB,Lambda 不用 SQLite)
+_IN_LAMBDA = bool(os.environ.get("AWS_LAMBDA_FUNCTION_NAME"))
+
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS iterations (
@@ -111,6 +114,9 @@ CREATE TABLE IF NOT EXISTS wallet_snapshots (
 
 @contextmanager
 def get_conn() -> Iterator[sqlite3.Connection]:
+    if _IN_LAMBDA:
+        # Lambda 上沒 SQLite,直接拋讓 caller skip
+        raise RuntimeError("Lambda 環境不寫 SQLite PnL")
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(DB_PATH))
     conn.row_factory = sqlite3.Row
@@ -148,6 +154,8 @@ def record_iteration(
     notes: str | None = None,
     ts: int | None = None,
 ) -> None:
+    if _IN_LAMBDA:
+        return  # Lambda 用 DDB 做 state,不用 SQLite
     ts = ts or int(time.time())
     init_db()
     with get_conn() as conn:
@@ -172,6 +180,8 @@ def record_order(
     error: str | None = None,
     ts: int | None = None,
 ) -> None:
+    if _IN_LAMBDA:
+        return
     ts = ts or int(time.time())
     init_db()
     with get_conn() as conn:
@@ -184,6 +194,8 @@ def record_order(
 
 
 def detect_and_record_fills(slug: str, yes_inv_now: float, no_inv_now: float) -> list[dict]:
+    if _IN_LAMBDA:
+        return []
     """比對上一輪 iteration 的庫存 vs 現在,推算 fill。
 
     限制:
@@ -235,6 +247,8 @@ def record_settlement(
     payout: float,
     ts: int | None = None,
 ) -> None:
+    if _IN_LAMBDA:
+        return
     ts = ts or int(time.time())
     init_db()
     with get_conn() as conn:
@@ -254,6 +268,8 @@ def record_wallet_snapshot(
     date: str | None = None,
     ts: int | None = None,
 ) -> None:
+    if _IN_LAMBDA:
+        return
     ts = ts or int(time.time())
     date = date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
     total_equity = usdc_balance + ctf_value_estimated + open_orders_locked

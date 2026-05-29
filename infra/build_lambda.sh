@@ -36,10 +36,10 @@ echo "[build] copying source code..."
 cp -r "$PROJECT_ROOT/limitless" "$BUILD_DIR/"
 cp -r "$PROJECT_ROOT/lambda_handlers" "$BUILD_DIR/"
 
-# 清掉 __pycache__、test 檔、py.typed 等省空間
+# 清掉 __pycache__、test 檔省空間
+# 注意:**不要**刪 *.dist-info!eth-account 用 importlib.metadata 查依賴版本
 find "$BUILD_DIR" -type d -name "__pycache__" -prune -exec rm -rf {} +
 find "$BUILD_DIR" -type d -name "tests" -prune -exec rm -rf {} +
-find "$BUILD_DIR" -type d -name "*.dist-info" -prune -exec rm -rf {} +
 find "$BUILD_DIR" -type f -name "*.pyc" -delete
 
 SIZE=$(du -sh "$BUILD_DIR" | cut -f1)

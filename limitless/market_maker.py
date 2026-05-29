@@ -298,7 +298,7 @@ class MarketMaker:
         if self.market is None:
             return None
         lm_title = self.market.get("title", "")
-        from ..crossarb import _strict_question_match
+        from .crossarb import _strict_question_match
         from .polymarket.clients import GammaClient
         async with GammaClient() as g:
             evs = await g.fetch_active_events(max_events=300)

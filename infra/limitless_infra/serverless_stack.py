@@ -41,15 +41,23 @@ from aws_cdk import (
 from constructs import Construct
 
 
-def _secure_param(scope: Stack, id_: str, *, name: str, description: str) -> ssm.CfnParameter:
-    return ssm.CfnParameter(
-        scope, id_,
-        name=name,
-        type="SecureString",
-        value="REPLACE_ME",
-        description=description,
-        tier="Standard",
-    )
+# SSM SecureString 不能用 CloudFormation 創建(CFN 限制),所以用 dataclass 描述
+# 部署前/後需要手動跑 aws ssm put-parameter 創 SecureString。
+from dataclasses import dataclass
+
+
+@dataclass
+class _ParamRef:
+    name: str
+    description: str
+
+
+# CDK 不創 SSM Parameter,只引用名稱;部署後用 aws CLI 手動 put SecureString
+PARAM_TOKEN_ID = _ParamRef("/limitless/api-token-id", "Limitless HMAC token id")
+PARAM_API_SECRET = _ParamRef("/limitless/api-secret", "Limitless HMAC secret")
+PARAM_PRIV_KEY = _ParamRef("/limitless/base-private-key", "Base 鏈 EOA 私鑰")
+PARAM_TG_TOKEN = _ParamRef("/limitless/telegram-bot-token", "Telegram bot token(可選)")
+PARAM_TG_CHAT = _ParamRef("/limitless/telegram-chat-id", "Telegram chat id(可選)")
 
 
 class LimitlessMmLoopServerlessStack(Stack):
@@ -67,32 +75,13 @@ class LimitlessMmLoopServerlessStack(Stack):
         super().__init__(scope, construct_id, **kwargs)
 
         # ---------- 1. SSM SecureString secrets ----------
-        token_id = _secure_param(
-            self, "LimitlessApiTokenIdParam",
-            name="/limitless/api-token-id",
-            description="Limitless HMAC token id",
-        )
-        api_secret = _secure_param(
-            self, "LimitlessApiSecretParam",
-            name="/limitless/api-secret",
-            description="Limitless HMAC secret",
-        )
-        priv_key = _secure_param(
-            self, "BasePrivateKeyParam",
-            name="/limitless/base-private-key",
-            description="Base 鏈 EOA 私鑰",
-        )
-        # Telegram(可選 — 不填則無通知,系統仍正常運作)
-        telegram_token = _secure_param(
-            self, "TelegramBotTokenParam",
-            name="/limitless/telegram-bot-token",
-            description="Telegram bot token(從 @BotFather 取得,可選)",
-        )
-        telegram_chat = _secure_param(
-            self, "TelegramChatIdParam",
-            name="/limitless/telegram-chat-id",
-            description="你的 Telegram chat id(可選)",
-        )
+        # 注意:SecureString 不能用 CloudFormation 創,要部署後跑 aws ssm put-parameter
+        # CDK 只引用名字(env var 注入 Lambda + IAM 政策)
+        token_id = PARAM_TOKEN_ID
+        api_secret = PARAM_API_SECRET
+        priv_key = PARAM_PRIV_KEY
+        telegram_token = PARAM_TG_TOKEN
+        telegram_chat = PARAM_TG_CHAT
 
         # ---------- 2. DynamoDB(provisioned 25 RCU + 25 WCU 永久免費)----------
         state_table = ddb.Table(
