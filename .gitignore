@@ -13,3 +13,16 @@ dist/
 .DS_Store
 data/
 *.log
+
+# AWS CDK 構建產物(每次 cdk synth / cdk deploy 重新生成)
+infra/cdk.out/
+cdk.out/
+
+# build_lambda.sh 產出的 Lambda zip 來源目錄(每次部署前 ./infra/build_lambda.sh 重新建)
+infra/lambda_build/
+
+# SQLite PnL DB 不該進 git
+*.db
+*.db-journal
+*.db-shm
+*.db-wal

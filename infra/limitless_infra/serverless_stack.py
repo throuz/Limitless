@@ -29,7 +29,6 @@ from aws_cdk import (
     CfnOutput,
     aws_cloudwatch as cw,
     aws_dynamodb as ddb,
-    aws_ecr_assets as ecr_assets,
     aws_events as events,
     aws_events_targets as targets,
     aws_iam as iam,
@@ -84,23 +83,28 @@ class LimitlessMmLoopServerlessStack(Stack):
             description="Base 鏈 EOA 私鑰",
         )
 
-        # ---------- 2. DynamoDB(on-demand,單表)----------
+        # ---------- 2. DynamoDB(provisioned 25 RCU + 25 WCU 永久免費)----------
         state_table = ddb.Table(
             self, "MmStateTable",
             table_name="limitless-mm-state",
             partition_key=ddb.Attribute(name="pk", type=ddb.AttributeType.STRING),
-            billing_mode=ddb.BillingMode.PAY_PER_REQUEST,   # on-demand,免管 capacity
-            removal_policy=RemovalPolicy.DESTROY,           # 練手用;真要保留改 RETAIN
+            billing_mode=ddb.BillingMode.PROVISIONED,
+            read_capacity=25,                               # always-free 上限
+            write_capacity=25,                              # always-free 上限
+            removal_policy=RemovalPolicy.DESTROY,
             point_in_time_recovery=False,                   # 開了會收費
         )
 
-        # ---------- 3. Lambda 共用 container image ----------
-        image_asset = ecr_assets.DockerImageAsset(
-            self, "LambdaImage",
-            directory="..",
-            file="Lambda.Dockerfile",     # 用我們特製的 Lambda Dockerfile
-            platform=ecr_assets.Platform.LINUX_AMD64,
-        )
+        # ---------- 3. Lambda ZIP code (從 infra/lambda_build/ 載入)----------
+        # 用 ZIP-based Lambda(不是 container image)→ 不需要 ECR → 真 $0
+        # 部署前必須先跑:./infra/build_lambda.sh 把 manylinux 相容 deps 包好
+        import os.path as _osp
+        BUILD_DIR = _osp.join(_osp.dirname(__file__), "..", "lambda_build")
+        if not _osp.isdir(BUILD_DIR):
+            raise RuntimeError(
+                f"找不到 {BUILD_DIR}。先跑:./infra/build_lambda.sh"
+            )
+        lambda_code = lambda_.Code.from_asset(BUILD_DIR)
 
         # 共用 env(兩個 Lambda 都一樣)
         common_env = {
@@ -143,15 +147,13 @@ class LimitlessMmLoopServerlessStack(Stack):
         # 我們在 handler entry 直接讀 SSM 並注入 os.environ。
         # → 因此這裡只給 IAM 權限,handler 自己處理 fetch。
 
-        iterate_fn = lambda_.DockerImageFunction(
+        iterate_fn = lambda_.Function(
             self, "IterateFunction",
             function_name="limitless-mm-iterate",
-            code=lambda_.DockerImageCode.from_ecr(
-                repository=image_asset.repository,
-                tag_or_digest=image_asset.image_tag,
-                cmd=["lambda_handlers.iterate.handler"],
-            ),
-            memory_size=512,                              # 512 MB 給 boto3 + sdk
+            runtime=lambda_.Runtime.PYTHON_3_12,
+            code=lambda_code,
+            handler="lambda_handlers.iterate.handler",
+            memory_size=512,
             timeout=Duration.seconds(60),                 # 一輪 iterate 應該 < 60s
             environment=common_env,
             reserved_concurrent_executions=1,             # 防止重疊
@@ -159,14 +161,12 @@ class LimitlessMmLoopServerlessStack(Stack):
             tracing=lambda_.Tracing.DISABLED,             # X-Ray 不免費
         )
 
-        rerank_fn = lambda_.DockerImageFunction(
+        rerank_fn = lambda_.Function(
             self, "RerankFunction",
             function_name="limitless-mm-rerank",
-            code=lambda_.DockerImageCode.from_ecr(
-                repository=image_asset.repository,
-                tag_or_digest=image_asset.image_tag,
-                cmd=["lambda_handlers.rerank.handler"],
-            ),
+            runtime=lambda_.Runtime.PYTHON_3_12,
+            code=lambda_code,
+            handler="lambda_handlers.rerank.handler",
             memory_size=512,
             timeout=Duration.seconds(180),                # rerank 要撈很多 orderbook
             environment=common_env,

@@ -6,11 +6,11 @@
 
 | | `serverless`(預設) ⭐ | `free` | `managed` |
 |---|---|---|---|
-| 運算 | Lambda + EventBridge | EC2 t3.micro | ECS Fargate |
-| 狀態 | DynamoDB(on-demand) | systemd in container | systemd in container |
+| 運算 | Lambda(ZIP)+ EventBridge | EC2 t3.micro | ECS Fargate |
+| 狀態 | DynamoDB(provisioned 25/25) | systemd in container | systemd in container |
 | 秘密 | SSM Parameter Store | SSM Parameter Store | Secrets Manager |
-| 映像 | ECR(Lambda container)| S3 asset | ECR |
-| **真實月成本** | **$0 ~ $0.50**(永久) | $0 → ~$8(12 個月後) | $11(永久) |
+| 映像 | S3 zip asset(無 ECR)| S3 asset | ECR |
+| **真實月成本** | **$0**(永久免費) | $0 → ~$8(12 個月後) | $11(永久) |
 | OS 維運 | 完全沒有 | 你要負責 | AWS 全託管 |
 | 崩潰恢復 | Lambda 下次觸發自動恢復 | systemd 自動重啟 | ECS 自動重啟 |
 | Iteration 反應速度 | 60-120s | 30s | 30s |
@@ -25,10 +25,10 @@
 | Lambda invocations | 43k | 1M | $0 |
 | Lambda GB-seconds | 55k | 400k | $0 |
 | EventBridge | 43k | 14M | $0 |
-| DynamoDB on-demand | 260k RW | 25 GB storage | ~$0.40 |
+| DynamoDB provisioned 25/25 | < 1 ops/sec | 25 RCU + 25 WCU 永久 | **$0** |
 | CloudWatch Logs | < 1 GB | 5 GB | $0 |
 | SSM Parameter Store | 3 個 | unlimited | $0 |
-| **總計** | | | **$0-0.50** |
+| **總計** | | | **$0** |
 
 **Free tier(EC2)**:
 
@@ -57,7 +57,7 @@
 
 1. **AWS 帳號** + IAM user with Admin(或最少 ECS / IAM / Secrets / Logs / ECR / VPC / CloudFormation)
 2. 本機裝好 `aws` CLI 並跑過 `aws configure`
-3. 本機裝好 Docker(CDK 要 build image)
+3. 本機裝好 Docker(只 EC2 / Fargate stack 需要;serverless 不需要)
 4. 本機裝好 Node.js(CDK CLI 要)
 5. Python 3.11+
 
@@ -99,7 +99,14 @@ python3 -m venv .venv
 
 ### 5. 部署
 
-**選 A:Serverless(預設,真正 $0)** ⭐ 推薦
+**選 A:Serverless(預設,真 $0)** ⭐ 推薦
+
+> 部署前必跑一次(把 Lambda 程式 + Linux 相容 deps 打包到 `infra/lambda_build/`):
+> ```bash
+> ./infra/build_lambda.sh
+> ```
+> 改 limitless 程式碼後也要重跑這個。
+
 
 ```bash
 # Dry-run(預設)— STACK_TIER 沒設 = "serverless"
