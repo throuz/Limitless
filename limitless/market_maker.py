@@ -506,6 +506,17 @@ class MarketMaker:
         ob = await self.lm.fetch_orderbook(self.cfg.slug)
         if ob is None:
             result["error"] = "無 orderbook，無法估市價清倉"
+            # 結算前清倉失敗是真實風險，必須通知人類介入
+            try:
+                notify.send(
+                    f"🆘 <b>緊急清倉失敗</b>\n"
+                    f"市場:<code>{self.cfg.slug[:60]}</code>\n"
+                    f"原因:orderbook 為空,無法估市價\n"
+                    f"庫存:YES={inv.yes_shares:.1f} NO={inv.no_shares:.1f}\n"
+                    f"動作:需手動到 Limitless UI 清倉"
+                )
+            except Exception:
+                pass
             return result
 
         async def _market_sell(token: str, label: str, size: float, best_bid_price: float) -> None:
