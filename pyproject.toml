@@ -1,7 +1,7 @@
 [project]
 name = "polymkt"
-version = "0.1.0"
-description = "Polymarket 套利掃描與交易工具"
+version = "0.9.0"
+description = "Limitless Exchange 做市工具 + Polymarket 輔助 oracle(台灣可用版)"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

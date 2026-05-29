@@ -364,8 +364,8 @@ async def attach_limitless_markets(
         return signals
 
     # 延遲匯入避免循環
-    from .crossarb import _content_tokens, _strict_question_match
-    from .limitless.client import LimitlessClient
+    from ..crossarb import _content_tokens, _strict_question_match
+    from ..limitless.client import LimitlessClient
 
     async with LimitlessClient() as lm_c:
         lm_singles, lm_groups = await lm_c.fetch_active_markets(max_markets=1000)

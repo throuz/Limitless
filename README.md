@@ -1,15 +1,24 @@
-# polymkt — 跨平台預測市場分析工具（台灣可用版）
+# polymkt — Limitless Exchange 做市工具(台灣可用版)
 
-> ⚠️ **免責聲明**：這套工具**不保證獲利**。預測市場有真實滑價、流動性、結算爭議等風險。
-> 工具只是降低「發現機會」的難度。
+> ⚠️ **免責聲明**:這套工具**不保證獲利**。預測市場有真實滑價、流動性、結算爭議等風險。
+> 工具只是降低「發現機會 + 自動執行」的難度。
 
-## 為什麼是「跨平台」工具
+## 一句話定位
 
-**台灣使用者在 Polymarket 為 close-only**（無法開新倉，[官方 geoblock 文件](https://docs.polymarket.com/api-reference/geoblock.md)）。所以本工具的設計：
+**Limitless Exchange 的 24/7 自動做市 + PnL 追蹤,以 Polymarket 當輔助 oracle**。
 
-- **Polymarket**：讀取分析資料源（市場效率、價格訊號）
-- **Limitless Exchange**（Base 鏈，台灣可用）：實際下單目標
-- **Cross-arb 模組**：以 Polymarket 為 oracle，找 Limitless 上偏離的機會
+- **主交易場**:Limitless(Base 鏈,台灣可用)
+- **輔助 oracle**:Polymarket(台灣 close-only,只讀,當公平價/訊號來源)
+- **執行能力**:make-market(單市場做市)、mm-rank(找標的)、mm-loop(24/7 自動換市場)
+- **部署**:本機 + tmux,或 AWS CDK(serverless / EC2 / Fargate 三選一)
+
+## 為什麼設計這樣
+
+| 元件 | 角色 | 為什麼 |
+|---|---|---|
+| **Limitless** | 主交易場 ✅ | Base 鏈 + 台灣可用 + spread 寬 |
+| **Polymarket** | 輔助 oracle | 流動性 10-100× 大,mid 較準;台灣不能新開倉 |
+| **Cross-arb** | 訊號 / 公平價 | LM 偏離 PM 太多 → 訊號可吃 / oracle 校正 |
 
 ## 安裝
 
@@ -376,8 +385,8 @@ LIMITLESS_EXECUTE=1 .venv/bin/python -m polymkt.cli limitless mm-loop \
 
 | 指令 | 用途 |
 |------|------|
-| `polymkt polymarket scan` | Polymarket 套利掃描（僅供觀察，台灣下不了單） |
-| `polymkt polymarket closest` | Polymarket 最接近套利的市場 |
+| `polymkt pm scan` | Polymarket 套利掃描(僅供觀察,台灣下不了單) |
+| `polymkt pm closest` | Polymarket 最接近套利的市場 |
 
 ## 實測結論（2026-05-20 跑 1000+ 市場）
 
@@ -413,38 +422,43 @@ Limitless API 對未認證請求的 rate limit 較嚴（會回 429）。Client �
 ## 程式碼結構
 
 ```
-limitless/
+limitless/                                ← repo root
 ├── polymkt/
-│   ├── __init__.py
-│   ├── models.py              # Polymarket 模型
-│   ├── clients.py             # Polymarket Gamma + CLOB client
-│   ├── scanner.py             # Polymarket 套利掃描
-│   ├── crossarb.py            # 跨平台價差比對
-│   ├── whales.py              # 鯨魚追蹤與跟單 (v0.6a)
-│   ├── cli.py                 # 統一 CLI 入口
-│   └── limitless/
-│       ├── models.py          # Limitless 模型(含 group + orderbook)
-│       ├── client.py          # Limitless API client(retry/backoff)
-│       ├── scanner.py         # Limitless 套利掃描
-│       ├── trading.py         # 下單 client(包 limitless-sdk + dry-run)
-│       ├── market_maker.py    # v0.6 做市核心(microprice/toxicity/unwind/emergency)
-│       ├── mm_loop.py         # v0.7 24/7 調度器(自動換市場)
-│       └── serverless.py      # Lambda 端狀態序列化(DDB I/O)
+│   ├── __init__.py                       # 套件 docstring
+│   ├── crossarb.py                       # 跨平台 PM↔LM 價差訊號(連接兩邊)
+│   ├── cli.py                            # 統一 CLI 入口
+│   │
+│   ├── limitless/                        # 🟢 主交易場
+│   │   ├── client.py                     # LM API client(read,retry/backoff)
+│   │   ├── models.py                     # Market / Group / OrderBook 模型
+│   │   ├── scanner.py                    # 套利機會掃描
+│   │   ├── trading.py                    # 下單 client(包 limitless-sdk + dry-run + 安全限額)
+│   │   ├── market_maker.py               # v0.6 做市核心(microprice/toxicity/unwind/emergency)
+│   │   ├── mm_loop.py                    # v0.7 24/7 自動換市場調度器
+│   │   ├── serverless.py                 # Lambda 端狀態序列化(DynamoDB I/O)
+│   │   └── pnl.py                        # v0.9 PnL 追蹤(SQLite)+ wallet snapshot
+│   │
+│   └── polymarket/                       # 🟡 輔助 oracle / 訊號源
+│       ├── clients.py                    # Gamma + CLOB client(read-only)
+│       ├── models.py                     # PM Event / Market / OrderBook
+│       ├── scanner.py                    # PM 套利掃描(觀察用)
+│       └── whales.py                     # 鯨魚追蹤(score / watch / follow)
 │
-├── lambda_handlers/           # AWS Lambda 進入點
-│   ├── iterate.py             # 每 N 秒跑一輪所有 active 市場
-│   └── rerank.py              # 每小時重新挑市場
+├── lambda_handlers/                      # AWS Lambda 進入點
+│   ├── iterate.py                        # 每 N 秒跑一輪所有 active 市場
+│   └── rerank.py                         # 每小時重新挑市場
 │
-├── infra/                     # AWS CDK 基礎設施(Python)
-│   ├── app.py                 # CDK entry(STACK_TIER=serverless/free/managed)
+├── infra/                                # AWS CDK 基礎設施(Python)
+│   ├── app.py                            # CDK entry(STACK_TIER=serverless/free/managed)
 │   ├── polymkt_infra/
-│   │   ├── serverless_stack.py    # Lambda + DDB + EventBridge stack
-│   │   ├── free_tier_stack.py     # EC2 t3.micro + SSM stack
-│   │   └── stack.py               # Fargate + Secrets Manager stack
-│   └── README.md              # 完整部署/維運指南
+│   │   ├── serverless_stack.py           # Lambda + DDB + EventBridge stack ⭐
+│   │   ├── free_tier_stack.py            # EC2 t3.micro + SSM stack
+│   │   └── stack.py                      # Fargate + Secrets Manager stack
+│   └── README.md                         # 完整部署/維運指南
 │
-├── Dockerfile                 # mm-loop EC2 / Fargate 容器
-└── Lambda.Dockerfile          # Lambda container image
+├── Dockerfile                            # mm-loop EC2 / Fargate 容器
+├── Lambda.Dockerfile                     # Lambda container image
+└── run-mm-local.sh                       # 本機 24/7 + auto-restart wrapper
 ```
 
 ## 路線圖

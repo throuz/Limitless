@@ -278,13 +278,13 @@ class MarketMaker:
         if self._pm_match_cache is None:
             return None
         pm_market_id = self._pm_match_cache
-        from ..clients import GammaClient
+        from ..polymarket.clients import GammaClient
         async with GammaClient() as g:
             try:
                 r = await g._client.get(f"/markets/{pm_market_id}")
                 r.raise_for_status()
                 raw = r.json()
-                from ..models import Market as PMMarket
+                from ..polymarket.models import Market as PMMarket
                 pm = PMMarket.from_gamma(raw if isinstance(raw, dict) else raw[0])
                 if pm is None or not pm.outcome_prices:
                     return None
@@ -298,7 +298,7 @@ class MarketMaker:
             return None
         lm_title = self.market.get("title", "")
         from ..crossarb import _strict_question_match
-        from ..clients import GammaClient
+        from ..polymarket.clients import GammaClient
         async with GammaClient() as g:
             evs = await g.fetch_active_events(max_events=300)
         for ev in evs:

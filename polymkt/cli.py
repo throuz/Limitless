@@ -21,8 +21,8 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from .clients import ClobClient, GammaClient
-from .scanner import scan as pm_scan
+from .polymarket.clients import ClobClient, GammaClient
+from .polymarket.scanner import scan as pm_scan
 from .limitless.client import LimitlessClient
 from .limitless.scanner import scan as lm_scan, closest as lm_closest
 from .crossarb import find_cross_pairs
@@ -33,9 +33,13 @@ console = Console()
 
 # ---------- Polymarket 子命令（保留原功能）----------
 
-@click.group(name="polymarket")
+@click.group(name="pm")
 def polymarket_group() -> None:
-    """Polymarket 操作（台灣只能讀，無法下新單）。"""
+    """Polymarket 工具(讀取分析、oracle、訊號)。
+
+    台灣 close-only,Polymarket 只當「觀察 + 輔助 oracle」用。
+    主交易場在 [polymkt limitless](根目錄命令)。
+    """
 
 
 @polymarket_group.command(name="scan")
@@ -128,11 +132,17 @@ def pm_closest_cmd(max_events: int, min_liquidity: float, top: int) -> None:
     asyncio.run(_run())
 
 
-# ---------- Limitless 子命令（主力）----------
+# ---------- Limitless 子命令(主力 — 同時也在 top level 註冊為直接命令)----------
 
 @click.group(name="limitless")
 def limitless_group() -> None:
-    """Limitless Exchange 操作（台灣可用）。"""
+    """Limitless Exchange 操作(主交易場)。
+
+    所有命令也可以直接呼叫(不用 limitless 前綴),例如:
+        polymkt mm-loop    ≡ polymkt limitless mm-loop
+        polymkt mm-rank    ≡ polymkt limitless mm-rank
+        polymkt scan       ≡ polymkt limitless scan
+    """
 
 
 @limitless_group.command(name="scan")
@@ -977,7 +987,25 @@ def crossarb_cmd(min_event_similarity: float, min_sub_match: float,
 
 @click.group()
 def cli() -> None:
-    """polymkt — 跨平台預測市場分析與下單工具。"""
+    """polymkt — Limitless Exchange 做市工具(+ Polymarket 輔助 oracle)。
+
+    主交易場:Limitless(Base 鏈,台灣可用)。
+    輔助:Polymarket 作為公平價 oracle 和訊號源(台灣 close-only,無法新開倉)。
+
+    常用命令:
+        polymkt mm-loop          # 24/7 自動做市(主力)
+        polymkt mm-rank          # 找適合做市的市場
+        polymkt make-market      # 單市場做市
+        polymkt place-order      # 手動單筆下單
+        polymkt scan / closest   # Limitless 套利掃描
+        polymkt pnl summary      # 看 PnL 紀錄
+        polymkt crossarb         # 跨平台價差訊號
+
+        polymkt pm scan          # Polymarket 掃描(觀察)
+        polymkt whales list      # Polymarket 鯨魚追蹤
+
+    部署:cd infra && cdk deploy  (見 infra/README.md)
+    """
     load_dotenv()
 
 
@@ -1160,7 +1188,7 @@ def whales_list_cmd(trades_limit: int, min_trade: float, min_value: float,
 
     Alpha = (已實現 ROI + 70% × 未實現 ROI) × log(累計交易量)
     """
-    from .whales import top_whales
+    from .polymarket.whales import top_whales
 
     async def _run():
         with console.status("[cyan]掃描 Polymarket 活躍錢包..."):
@@ -1220,7 +1248,7 @@ def whales_list_cmd(trades_limit: int, min_trade: float, min_value: float,
 def whales_watch_cmd(wallets: str | None, lookback_min: int,
                      min_trade: float, trades_limit: int) -> None:
     """監控指定鯨魚的最新動作、產生跟單訊號。"""
-    from .whales import find_whale_signals, top_whales, PolymarketDataClient, score_wallet
+    from .polymarket.whales import find_whale_signals, top_whales, PolymarketDataClient, score_wallet
     import time
 
     wallet_str = wallets or os.environ.get("WHALE_WALLETS", "").strip()
@@ -1296,7 +1324,7 @@ def whales_follow_cmd(wallets: str | None, lookback_min: int, min_trade: float,
       3. 對找到對應的訊號在 LM 下單（FAK 立即吃 best ask 或 GTC 排隊）
       4. 預設 dry-run；加 --execute 才真實送出
     """
-    from .whales import find_whale_signals, attach_limitless_markets, PolymarketDataClient, score_wallet
+    from .polymarket.whales import find_whale_signals, attach_limitless_markets, PolymarketDataClient, score_wallet
     from .limitless.trading import LimitlessTradingClient, OrderRequest
     import time
 
@@ -1618,12 +1646,21 @@ def pnl_markets_cmd(days: int) -> None:
     console.print(t)
 
 
-cli.add_command(polymarket_group)
-cli.add_command(limitless_group)
-cli.add_command(whales_group)
-cli.add_command(crossarb_cmd)
-cli.add_command(crossarb_execute_cmd)
-cli.add_command(pnl_group)
+cli.add_command(polymarket_group)        # `polymkt pm ...`
+cli.add_command(limitless_group)         # `polymkt limitless ...`(完整命名空間)
+cli.add_command(whales_group)            # `polymkt whales ...`
+cli.add_command(crossarb_cmd)            # `polymkt crossarb`
+cli.add_command(crossarb_execute_cmd)    # `polymkt crossarb-execute`
+cli.add_command(pnl_group)               # `polymkt pnl ...`
+
+
+# ---------- Limitless 命令的 top-level 捷徑(`polymkt mm-loop` ≡ `polymkt limitless mm-loop`)----------
+
+for _name in ("scan", "closest", "auth-derive", "place-order",
+              "make-market", "mm-rank", "mm-loop"):
+    _cmd = limitless_group.commands.get(_name)
+    if _cmd is not None:
+        cli.add_command(_cmd, name=_name)
 
 
 def main() -> None:

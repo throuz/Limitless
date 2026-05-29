@@ -22,10 +22,10 @@ import unicodedata
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 
-from .clients import GammaClient
+from .polymarket.clients import GammaClient
 from .limitless.client import LimitlessClient
 from .limitless.models import LimitlessMarket, LimitlessGroup
-from .models import Event as PMEvent, Market as PMMarket
+from .polymarket.models import Event as PMEvent, Market as PMMarket
 
 
 @dataclass
