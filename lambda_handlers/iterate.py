@@ -128,8 +128,12 @@ async def _iterate_one_market(slug: str, table, tc, lm, cfg: ServerlessCfg, g, r
         log("market_missing", slug=slug, msg="active 有此 slug 但 DDB 沒 state,建空白")
         state = MarketState(slug=slug, created_at=int(time.time()))
 
-    if state.exhausted:
-        # 已標記但可能還有殘餘訂單(上次 iterate 沒清乾淨)
+    # 判斷有無庫存(從 tox 上次見到的 last_*_inv,雖然可能 stale 但夠用)
+    inv_hint = float((state.tox or {}).get("last_yes_inv", 0)) \
+             + float((state.tox or {}).get("last_no_inv", 0))
+
+    if state.exhausted and inv_hint < 0.01:
+        # 真的沒倉位 → 確定可以撤
         try:
             await tc._order_client.cancel_all(slug)
         except Exception:
@@ -139,18 +143,26 @@ async def _iterate_one_market(slug: str, table, tc, lm, cfg: ServerlessCfg, g, r
     # 計算這個市場還能用多少資本
     per_market_remaining = max(0.0, cfg.capital_per_market - state.capital_used)
     cap_this_market = min(per_market_remaining, remaining_global)
+    winddown_mode = False
     if cap_this_market < 5.0:
-        log("market_capital_exhausted", slug=slug, used=state.capital_used,
-            cap=cfg.capital_per_market)
-        # 標記 exhausted 前,先撤這個市場上所有殘餘訂單
-        try:
-            await tc._order_client.cancel_all(slug)
-            log("market_orders_cancelled_on_exhaust", slug=slug)
-        except Exception as e:
-            log("market_cancel_error", slug=slug, error=str(e))
-        state.exhausted = True
-        save_market(table, state)
-        return {"exhausted": True}
+        # 資本耗盡 — 還有倉位的話繼續跑(讓 mm.iterate() 的 SELL unwind 邏輯處理)
+        if inv_hint > 0.01:
+            log("market_capital_exhausted_winddown", slug=slug,
+                used=state.capital_used, cap=cfg.capital_per_market,
+                inv_hint=inv_hint)
+            winddown_mode = True
+            cap_this_market = 0.0   # 強制 mm.cfg.capital_usdc == state.capital_used → threshold=0
+        else:
+            log("market_capital_exhausted_no_inventory", slug=slug,
+                used=state.capital_used, cap=cfg.capital_per_market)
+            try:
+                await tc._order_client.cancel_all(slug)
+                log("market_orders_cancelled_on_exhaust", slug=slug)
+            except Exception as e:
+                log("market_cancel_error", slug=slug, error=str(e))
+            state.exhausted = True
+            save_market(table, state)
+            return {"exhausted": True}
 
     mc = MakerConfig(
         slug=slug,

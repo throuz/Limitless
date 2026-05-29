@@ -426,7 +426,11 @@ class MarketMaker:
         - 庫存 YES 超過 max × unwind_inventory_pct → 掛 SELL YES @ yes_mid + premium
         - 庫存 NO  超過 max × unwind_inventory_pct → 掛 SELL NO  @ no_mid  + premium
         """
-        threshold = self.cfg.max_inventory_shares * self.cfg.unwind_inventory_pct
+        # 資本耗盡時 threshold = 0(任何庫存都清倉,避免 orphan 部位)
+        if self._capital_used >= self.cfg.capital_usdc:
+            threshold = 0.0
+        else:
+            threshold = self.cfg.max_inventory_shares * self.cfg.unwind_inventory_pct
         premium = self.cfg.unwind_premium_pct / 100
 
         yes_sell = None
@@ -456,16 +460,25 @@ class MarketMaker:
         yes = no = 0.0
         if not isinstance(positions, dict):
             return Inventory(yes_shares=0, no_shares=0)
+        # Limitless portfolio API 結構:
+        #   positions['clob'] = [
+        #       {
+        #          'market': {'slug': ..., 'yesPositionId': ..., 'noPositionId': ...},
+        #          'tokensBalance': {'yes': '10000000', 'no': '0'},   ← raw × 1e6
+        #          ...
+        #       }
+        #   ]
+        # 用 slug 或 condition id 匹配本 market,讀 tokensBalance.yes / no
         for pos in (positions.get("clob") or []):
-            tid = str(pos.get("tokenId") or pos.get("token_id") or "")
-            try:
-                size = float(pos.get("size") or pos.get("shares") or 0)
-            except (TypeError, ValueError):
+            mk = pos.get("market") or {}
+            if mk.get("slug") != self.cfg.slug:
                 continue
-            if tid == self.yes_token:
-                yes += size
-            elif tid == self.no_token:
-                no += size
+            bal = pos.get("tokensBalance") or {}
+            try:
+                yes += float(bal.get("yes") or 0) / 1_000_000
+                no += float(bal.get("no") or 0) / 1_000_000
+            except (TypeError, ValueError):
+                pass
         return Inventory(yes_shares=yes, no_shares=no)
 
     async def cancel_all(self) -> None:

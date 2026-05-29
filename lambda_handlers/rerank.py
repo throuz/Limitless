@@ -120,6 +120,13 @@ async def _run(event: dict, context) -> dict:
             await _cancel_orders(slug, "missing_state")
             continue
         if st.exhausted:
+            # 有庫存的話保留(讓 iterate 用 SELL unwind 處理,避免 orphan 部位)
+            inv_hint = float((st.tox or {}).get("last_yes_inv", 0)) \
+                     + float((st.tox or {}).get("last_no_inv", 0))
+            if inv_hint > 0.01:
+                log("rerank_keep_exhausted_for_winddown", slug=slug, inv=inv_hint)
+                keep_slugs.append(slug)
+                continue
             removed_exhausted.append(slug)
             await _cancel_orders(slug, "exhausted")
             capital_freed += st.capital_used
