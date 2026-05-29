@@ -143,15 +143,23 @@ async def _iterate_one_market(slug: str, table, tc, lm, cfg: ServerlessCfg, g, r
     # 計算這個市場還能用多少資本
     per_market_remaining = max(0.0, cfg.capital_per_market - state.capital_used)
     cap_this_market = min(per_market_remaining, remaining_global)
-    winddown_mode = False
-    if cap_this_market < 5.0:
-        # 資本耗盡 — 還有倉位的話繼續跑(讓 mm.iterate() 的 SELL unwind 邏輯處理)
+    # winddown 改基於 state.exhausted 旗標(持久),只要還有倉位就維持 SELL only
+    # 不再依 cap_this_market 比較(SELL fill 會降 cap,但 winddown 應持續到清光)
+    winddown_mode = bool(state.exhausted) and inv_hint > 0.01
+    if winddown_mode:
+        log("market_winddown_mode", slug=slug,
+            used=state.capital_used, inv_hint=inv_hint)
+        cap_this_market = 0.0   # 強制 mm.cfg.capital_usdc == state.capital_used → threshold=0
+    elif cap_this_market < 5.0:
         if inv_hint > 0.01:
+            # cap 剛達上限,還沒標 exhausted → 標起來
             log("market_capital_exhausted_winddown", slug=slug,
                 used=state.capital_used, cap=cfg.capital_per_market,
                 inv_hint=inv_hint)
+            state.exhausted = True
             winddown_mode = True
-            cap_this_market = 0.0   # 強制 mm.cfg.capital_usdc == state.capital_used → threshold=0
+            cap_this_market = 0.0
+            save_market(table, state)
         else:
             log("market_capital_exhausted_no_inventory", slug=slug,
                 used=state.capital_used, cap=cfg.capital_per_market)
@@ -177,6 +185,15 @@ async def _iterate_one_market(slug: str, table, tc, lm, cfg: ServerlessCfg, g, r
         use_microprice=cfg.use_microprice,
         emergency_close_hours=cfg.emergency_close_hours,
         winddown_mode=winddown_mode,
+        # Toxicity 細項(從 ServerlessCfg 傳遞)
+        toxicity_window=cfg.toxicity_window,
+        toxicity_imbalance_threshold=cfg.toxicity_imbalance_threshold,
+        toxicity_pm_velocity_threshold=cfg.toxicity_pm_velocity_threshold,
+        toxicity_ask_drop_threshold=cfg.toxicity_ask_drop_threshold,
+        toxicity_widen_multiplier=cfg.toxicity_widen_multiplier,
+        inventory_skew_pct=cfg.inventory_skew_pct,
+        unwind_inventory_pct=cfg.unwind_inventory_pct,
+        unwind_premium_pct=cfg.unwind_premium_pct,
     )
 
     mm = MarketMaker(mc, tc, lm)

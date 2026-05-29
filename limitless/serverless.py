@@ -212,6 +212,16 @@ class ServerlessCfg:
     oracle_mode: str = "pm"
     use_microprice: bool = True
     emergency_close_hours: float = 24.0
+    # Toxicity 細項
+    toxicity_window: int = 5
+    toxicity_imbalance_threshold: float = 0.7
+    toxicity_pm_velocity_threshold: float = 0.03
+    toxicity_ask_drop_threshold: float = 0.02
+    toxicity_widen_multiplier: float = 2.0
+    # Inventory / unwind
+    inventory_skew_pct: float = 0.5
+    unwind_inventory_pct: float = 0.6
+    unwind_premium_pct: float = 1.0
     execute: bool = False
 
     @classmethod
@@ -236,6 +246,16 @@ class ServerlessCfg:
             oracle_mode=s("MM_LOOP_ORACLE", "pm"),
             use_microprice=os.environ.get("MM_LOOP_USE_MICROPRICE", "1") == "1",
             emergency_close_hours=f("MM_LOOP_EMERGENCY_HOURS", 24),
+            # Toxicity
+            toxicity_window=i("MM_LOOP_TOXICITY_WINDOW", 5),
+            toxicity_imbalance_threshold=f("MM_LOOP_TOXICITY_IMBALANCE", 0.7),
+            toxicity_pm_velocity_threshold=f("MM_LOOP_TOXICITY_PM_VELOCITY", 0.03),
+            toxicity_ask_drop_threshold=f("MM_LOOP_TOXICITY_ASK_DROP", 0.02),
+            toxicity_widen_multiplier=f("MM_LOOP_TOXICITY_WIDEN_MULT", 2.0),
+            # Inventory / unwind
+            inventory_skew_pct=f("MM_LOOP_INVENTORY_SKEW_PCT", 0.5),
+            unwind_inventory_pct=f("MM_LOOP_UNWIND_INVENTORY_PCT", 0.6),
+            unwind_premium_pct=f("MM_LOOP_UNWIND_PREMIUM_PCT", 1.0),
             execute=os.environ.get("LIMITLESS_EXECUTE", "0") == "1",
         )
 
