@@ -28,6 +28,7 @@ from typing import Any
 
 from .client import LimitlessClient
 from .trading import LimitlessTradingClient, OrderRequest
+from . import pnl as pnl_db
 
 
 @dataclass
@@ -652,6 +653,28 @@ class MarketMaker:
                 no_sell_price = no_sell
                 no_sell_accepted = res.accepted
                 notes.append(f"  SELL NO  @${no_sell:.3f} × {size:.1f} {'OK' if res.accepted else 'REJ:' + (res.error or '?')} (清庫存)")
+
+        # 10. PnL 紀錄(v0.9)— 偵測 fills + 寫 iteration snapshot
+        try:
+            if inv is not None:
+                fills = pnl_db.detect_and_record_fills(
+                    self.cfg.slug, inv.yes_shares, inv.no_shares,
+                )
+                for f in fills:
+                    notes.append(f"  📊 detected fill: {f['outcome']} {f['shares']:.1f} @ ${f['price']:.3f}")
+
+            pnl_db.record_iteration(
+                slug=self.cfg.slug,
+                yes_bid=yes_bid, no_bid=no_bid,
+                yes_sell=yes_sell_price, no_sell=no_sell_price,
+                yes_inventory=(inv.yes_shares if inv else 0),
+                no_inventory=(inv.no_shares if inv else 0),
+                capital_used=self._capital_used,
+                toxicity_score=tox.score,
+                notes=" | ".join(notes[-3:]) if notes else None,
+            )
+        except Exception as e:
+            notes.append(f"  ⚠️ PnL DB 寫入失敗: {e}")
 
         return IterationResult(
             yes_bid_price=yes_bid, no_bid_price=no_bid,

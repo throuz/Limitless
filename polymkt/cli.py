@@ -1401,11 +1401,229 @@ def whales_follow_cmd(wallets: str | None, lookback_min: int, min_trade: float,
     asyncio.run(_run())
 
 
+# ---------- PnL 追蹤 (v0.9) ----------
+
+@click.group(name="pnl")
+def pnl_group() -> None:
+    """PnL 追蹤 + 報表(SQLite 本機儲存)。"""
+
+
+@pnl_group.command(name="init")
+def pnl_init_cmd() -> None:
+    """初始化 PnL 資料庫(自動建立 ~/.polymkt/pnl.db)。"""
+    from .limitless import pnl
+    pnl.init_db()
+    console.print(f"[green]✓[/green] PnL DB 初始化:{pnl.DB_PATH}")
+
+
+@pnl_group.command(name="reset")
+@click.confirmation_option(prompt="確定要砍掉所有 PnL 紀錄?")
+def pnl_reset_cmd() -> None:
+    """砍掉所有 PnL 紀錄(慎用,不可復原)。"""
+    from .limitless import pnl
+    pnl.reset_db()
+    console.print(f"[yellow]⚠[/yellow] PnL DB 已重置:{pnl.DB_PATH}")
+
+
+@pnl_group.command(name="snapshot")
+def pnl_snapshot_cmd() -> None:
+    """立即抓一筆 wallet snapshot(USDC + ETH + CTF estimate + open orders)。
+
+    建議放進 cron 每天跑一次,或讓 mm-loop 自動做。
+    """
+    from .limitless import pnl
+    from .limitless.trading import LimitlessTradingClient
+    from eth_account import Account
+
+    priv = os.environ.get("BASE_PRIVATE_KEY")
+    if not priv:
+        console.print("[red]缺 BASE_PRIVATE_KEY,無法推算 wallet 地址[/red]")
+        return
+    addr = Account.from_key(priv).address
+
+    async def _run():
+        try:
+            tc = LimitlessTradingClient.from_env()
+        except RuntimeError:
+            tc = None
+            console.print("[yellow]無 LM 認證,只抓鏈上 USDC/ETH(不抓 portfolio)[/yellow]")
+        snap = await pnl.snapshot_wallet(addr, tc)
+        if tc:
+            await tc.close()
+        console.print(Panel(
+            f"[bold]Wallet Snapshot[/bold]\n"
+            f"地址:        {addr}\n"
+            f"USDC:        ${snap['usdc']:.2f}\n"
+            f"ETH:         {snap['eth']:.6f}\n"
+            f"CTF 估值:    ${snap['ctf_value']:.2f}\n"
+            f"鎖在開單:    ${snap['open_orders_locked']:.2f}\n"
+            f"Active 市場: {snap['active_markets']}\n"
+            f"[bold]總 Equity:    ${snap['total_equity']:.2f}[/bold]",
+            border_style="green",
+        ))
+
+    asyncio.run(_run())
+
+
+@pnl_group.command(name="settlements")
+def pnl_settlements_cmd() -> None:
+    """偵測已結算市場(過去有部位但現在 portfolio 沒了),寫入 PnL DB。"""
+    from .limitless import pnl
+    from .limitless.trading import LimitlessTradingClient
+
+    async def _run():
+        try:
+            tc = LimitlessTradingClient.from_env()
+        except RuntimeError as e:
+            console.print(f"[red]{e}[/red]")
+            return
+        with console.status("[cyan]偵測結算..."):
+            settled = await pnl.detect_settlements(tc)
+        await tc.close()
+        if not settled:
+            console.print("[yellow]沒偵測到新結算[/yellow]")
+            return
+        t = Table(title=f"偵測到 {len(settled)} 個結算市場", show_lines=True)
+        t.add_column("Slug", overflow="fold")
+        t.add_column("YES", justify="right")
+        t.add_column("NO", justify="right")
+        t.add_column("Cost", justify="right")
+        t.add_column("Payout(估)", justify="right")
+        t.add_column("PnL(估)", justify="right")
+        for s in settled:
+            pnl_v = s["pnl_estimated"]
+            t.add_row(
+                s["slug"][:40],
+                f"{s['yes_shares']:.1f}",
+                f"{s['no_shares']:.1f}",
+                f"${s['cost']:.2f}",
+                f"${s['payout_estimated']:.2f}",
+                Text(f"${pnl_v:+.2f}", style="green" if pnl_v > 0 else "red"),
+            )
+        console.print(t)
+        console.print("[dim]註:payout 是估計值。實際結果要從 LM history API 或網頁查證。[/dim]")
+
+    asyncio.run(_run())
+
+
+@pnl_group.command(name="summary")
+@click.option("--days", type=int, default=30, help="統計區間(天)")
+def pnl_summary_cmd(days: int) -> None:
+    """整體 PnL 摘要。"""
+    from .limitless import pnl
+    s = pnl.summary_stats(days=days)
+
+    fill_rate = (s.orders_accepted / s.orders_total * 100) if s.orders_total else 0
+    body_lines = [
+        f"[bold]期間:過去 {s.days} 天[/bold]",
+        f"",
+        f"📊 [cyan]活動量[/cyan]",
+        f"  Iterations:    {s.iterations:,}",
+        f"  Orders:        {s.orders_total:,} (accepted {s.orders_accepted}, rejected {s.orders_rejected})",
+        f"  Order 接受率:  {fill_rate:.1f}%",
+        f"",
+        f"🎯 [cyan]做市表現[/cyan]",
+        f"  Fills:               {s.fills_count:,}",
+        f"  Fills 總 notional:   ${s.fills_total_notional:,.2f}",
+        f"  **配對率(估)**:     {s.pair_completion_rate_pct:.1f}%",
+        f"  平均 toxicity:       {s.avg_toxicity:.2f}",
+        f"",
+        f"💰 [cyan]損益[/cyan]",
+        f"  結算次數:           {s.settlements_count}",
+        f"  已實現 PnL(估):     ${s.realized_pnl:+.2f}",
+    ]
+    if s.first_wallet_equity is not None and s.last_wallet_equity is not None:
+        sign = "green" if (s.period_pnl or 0) >= 0 else "red"
+        body_lines.extend([
+            f"",
+            f"📈 [cyan]Equity 變動[/cyan]",
+            f"  期初:  ${s.first_wallet_equity:.2f}",
+            f"  期末:  ${s.last_wallet_equity:.2f}",
+            f"  [bold]變動:  [{sign}]${s.period_pnl:+.2f} ({s.period_pnl_pct:+.2f}%)[/{sign}][/bold]",
+        ])
+    else:
+        body_lines.extend([
+            f"",
+            f"[dim](沒有 wallet snapshot 紀錄;跑 `pnl snapshot` 開始追蹤)[/dim]",
+        ])
+
+    console.print(Panel("\n".join(body_lines), title="PnL Summary", border_style="cyan"))
+
+
+@pnl_group.command(name="daily")
+@click.option("--days", type=int, default=14, help="顯示幾天")
+def pnl_daily_cmd(days: int) -> None:
+    """每日 PnL 分解。"""
+    from .limitless import pnl
+    rows = pnl.daily_breakdown(days=days)
+    if not rows:
+        console.print("[yellow]沒有資料(可能還沒開始跑 bot,或還沒有 fills)[/yellow]")
+        return
+
+    t = Table(title=f"每日明細(過去 {days} 天)", show_lines=True)
+    t.add_column("日期")
+    t.add_column("市場數", justify="right")
+    t.add_column("Fills", justify="right")
+    t.add_column("Fill notional", justify="right")
+    t.add_column("結算", justify="right")
+    t.add_column("Realized PnL", justify="right")
+    t.add_column("Equity", justify="right")
+    for r in rows:
+        pnl_v = r["realized_pnl"]
+        pnl_style = "green" if pnl_v > 0 else ("red" if pnl_v < 0 else "dim")
+        t.add_row(
+            r["date"],
+            str(r["markets"]),
+            str(r["fills"]),
+            f"${r['fills_notional']:.2f}",
+            str(r["settlements"]),
+            Text(f"${pnl_v:+.2f}", style=pnl_style),
+            f"${r['equity']:.2f}" if r["equity"] is not None else "-",
+        )
+    console.print(t)
+
+
+@pnl_group.command(name="markets")
+@click.option("--days", type=int, default=30)
+def pnl_markets_cmd(days: int) -> None:
+    """按市場分解 PnL。"""
+    from .limitless import pnl
+    rows = pnl.per_market_breakdown(days=days)
+    if not rows:
+        console.print("[yellow]沒資料[/yellow]")
+        return
+
+    t = Table(title=f"按市場分解(過去 {days} 天)", show_lines=True)
+    t.add_column("Slug", overflow="fold")
+    t.add_column("Iters", justify="right")
+    t.add_column("YES fills", justify="right")
+    t.add_column("NO fills", justify="right")
+    t.add_column("Peak YES", justify="right")
+    t.add_column("Peak NO", justify="right")
+    t.add_column("Peak cap", justify="right")
+    t.add_column("Realized PnL", justify="right")
+    for r in rows:
+        pnl_v = r["realized_pnl"]
+        pnl_style = "green" if pnl_v > 0 else ("red" if pnl_v < 0 else "dim")
+        t.add_row(
+            r["slug"][:35],
+            str(r["iterations"]),
+            str(r["yes_fills"]),
+            str(r["no_fills"]),
+            f"{r['peak_yes_inv']:.1f}",
+            f"{r['peak_no_inv']:.1f}",
+            f"${r['peak_capital']:.2f}",
+            Text(f"${pnl_v:+.2f}", style=pnl_style),
+        )
+    console.print(t)
+
+
 cli.add_command(polymarket_group)
 cli.add_command(limitless_group)
 cli.add_command(whales_group)
 cli.add_command(crossarb_cmd)
 cli.add_command(crossarb_execute_cmd)
+cli.add_command(pnl_group)
 
 
 def main() -> None:
