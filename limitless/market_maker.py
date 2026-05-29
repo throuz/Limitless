@@ -601,15 +601,19 @@ class MarketMaker:
             yes_delta = inv.yes_shares - self._tox.last_yes_inv
             no_delta = inv.no_shares - self._tox.last_no_inv
 
-            # BUY fill(庫存增加)
+            # BUY fill(庫存增加)→ 真實扣 cap_used(實際 USDC 流出)
             if yes_delta > 0.01:
-                notes.append(f"  📊 BUY YES fill +{yes_delta:.1f} 股 @ ~${yes_mid:.3f}")
+                cost = yes_delta * yes_mid
+                self._capital_used += cost
+                notes.append(f"  📊 BUY YES fill +{yes_delta:.1f} 股 @ ~${yes_mid:.3f} 花~${cost:.2f}")
                 try:
                     notify.fill_detected(self.cfg.slug, "YES", yes_delta, yes_mid)
                 except Exception:
                     pass
             if no_delta > 0.01:
-                notes.append(f"  📊 BUY NO fill +{no_delta:.1f} 股 @ ~${no_mid:.3f}")
+                cost = no_delta * no_mid
+                self._capital_used += cost
+                notes.append(f"  📊 BUY NO fill +{no_delta:.1f} 股 @ ~${no_mid:.3f} 花~${cost:.2f}")
                 try:
                     notify.fill_detected(self.cfg.slug, "NO", no_delta, no_mid)
                 except Exception:
@@ -711,8 +715,9 @@ class MarketMaker:
             else:
                 notes.append("  NO  BUY 撤（toxicity）")
 
-            if yes_bid_accepted and no_bid_accepted:
-                self._capital_used += notional_buys
+            # NOTE: cap_used 不在這裡 += notional_buys。
+            # GTC post_only 訂單只是「掛在 book 上」,USDC 沒真實流出。
+            # 真實扣款只發生在「對手吃單,我們真的拿到 share」時 → 已在 BUY fill 偵測加上(line 605-619)。
 
         # 9. 主動 SELL 清庫存
         yes_sell_price = no_sell_price = 0.0
