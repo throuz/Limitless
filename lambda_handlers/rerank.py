@@ -22,6 +22,8 @@ from limitless.serverless import (
     get_table,
     load_active,
     save_active,
+    load_global,
+    save_global,
     load_market,
     save_market,
     delete_market,
@@ -86,8 +88,10 @@ async def _run(event: dict, context) -> dict:
     table = get_table()
 
     active = load_active(table)
+    g = load_global(table)
     removed_settled = []
     removed_exhausted = []
+    capital_freed = 0.0   # 累計從移除市場「歸還」到 global cap 的額度
 
     # 準備 trading client 給 cancel_all 用(無認證時 cancel 步驟 silent skip)
     tc = None
@@ -118,6 +122,7 @@ async def _run(event: dict, context) -> dict:
         if st.exhausted:
             removed_exhausted.append(slug)
             await _cancel_orders(slug, "exhausted")
+            capital_freed += st.capital_used
             delete_market(table, slug)
             continue
         if st.expiration_date:
@@ -125,9 +130,18 @@ async def _run(event: dict, context) -> dict:
             if d is not None and d < 0:
                 removed_settled.append(slug)
                 await _cancel_orders(slug, "settled")
+                capital_freed += st.capital_used
                 delete_market(table, slug)
                 continue
         keep_slugs.append(slug)
+
+    # 從 global 扣回被移除市場的 capital_used(否則 global cap 永遠只增不減)
+    if capital_freed > 0:
+        old_used = g.total_capital_used
+        g.total_capital_used = max(0.0, g.total_capital_used - capital_freed)
+        log("rerank_capital_freed", freed=capital_freed,
+            global_before=old_used, global_after=g.total_capital_used)
+        save_global(table, g)
 
     active.slugs = keep_slugs
 
