@@ -29,6 +29,7 @@ from typing import Any
 from .client import LimitlessClient
 from .trading import LimitlessTradingClient, OrderRequest
 from . import pnl as pnl_db
+from . import notify
 
 
 @dataclass
@@ -536,6 +537,15 @@ class MarketMaker:
             for s in unwind.get("sells", []):
                 tag = "dry" if s["dry_run"] else ("OK" if s["accepted"] else "FAIL")
                 notes.append(f"  {s['side']} @${s['price']:.3f} × {s['size']:.1f} [{tag}] {s.get('error') or ''}")
+            # Telegram 通知緊急清倉
+            try:
+                notify.emergency_close(
+                    self.cfg.slug, hrs,
+                    inv.yes_shares if inv else 0,
+                    inv.no_shares if inv else 0,
+                )
+            except Exception:
+                pass
             return IterationResult(
                 yes_bid_price=0, no_bid_price=0,
                 yes_order_accepted=False, no_order_accepted=False,

@@ -28,6 +28,7 @@ from limitless.serverless import (
     log,
     MarketState,
 )
+from limitless import notify
 
 
 # 與 cli._news_risk_score / mm_loop._news_risk_score 同一份
@@ -73,6 +74,10 @@ def handler(event: dict, context):
         return asyncio.run(_run(event, context))
     except Exception as e:
         log("rerank_handler_error", error=str(e), traceback=traceback.format_exc())
+        try:
+            notify.lambda_error("limitless-mm-rerank", "handler", str(e))
+        except Exception:
+            pass
         raise
 
 

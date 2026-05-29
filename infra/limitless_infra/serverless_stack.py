@@ -82,6 +82,17 @@ class LimitlessMmLoopServerlessStack(Stack):
             name="/limitless/base-private-key",
             description="Base 鏈 EOA 私鑰",
         )
+        # Telegram(可選 — 不填則無通知,系統仍正常運作)
+        telegram_token = _secure_param(
+            self, "TelegramBotTokenParam",
+            name="/limitless/telegram-bot-token",
+            description="Telegram bot token(從 @BotFather 取得,可選)",
+        )
+        telegram_chat = _secure_param(
+            self, "TelegramChatIdParam",
+            name="/limitless/telegram-chat-id",
+            description="你的 Telegram chat id(可選)",
+        )
 
         # ---------- 2. DynamoDB(provisioned 25 RCU + 25 WCU 永久免費)----------
         state_table = ddb.Table(
@@ -132,6 +143,9 @@ class LimitlessMmLoopServerlessStack(Stack):
             "SSM_TOKEN_ID_NAME": token_id.name,
             "SSM_API_SECRET_NAME": api_secret.name,
             "SSM_PRIV_KEY_NAME": priv_key.name,
+            # Telegram(可選)
+            "SSM_TELEGRAM_BOT_TOKEN_NAME": telegram_token.name,
+            "SSM_TELEGRAM_CHAT_ID_NAME": telegram_chat.name,
         }
 
         # 共用 secrets — Lambda env var 注入(從 SSM)
@@ -175,10 +189,25 @@ class LimitlessMmLoopServerlessStack(Stack):
             tracing=lambda_.Tracing.DISABLED,
         )
 
+        # 每日 Telegram 摘要(每 24h 一次)
+        daily_summary_fn = lambda_.Function(
+            self, "DailySummaryFunction",
+            function_name="limitless-mm-daily-summary",
+            runtime=lambda_.Runtime.PYTHON_3_12,
+            code=lambda_code,
+            handler="lambda_handlers.daily_summary.handler",
+            memory_size=512,
+            timeout=Duration.seconds(60),
+            environment=common_env,
+            reserved_concurrent_executions=1,
+            log_retention=logs.RetentionDays.TWO_WEEKS,
+            tracing=lambda_.Tracing.DISABLED,
+        )
+
         # ---------- 4. IAM:DDB + SSM 讀權限 ----------
-        for fn in (iterate_fn, rerank_fn):
+        for fn in (iterate_fn, rerank_fn, daily_summary_fn):
             state_table.grant_read_write_data(fn)
-            for p in (token_id, api_secret, priv_key):
+            for p in (token_id, api_secret, priv_key, telegram_token, telegram_chat):
                 fn.add_to_role_policy(iam.PolicyStatement(
                     actions=["ssm:GetParameter"],
                     resources=[self.format_arn(
@@ -214,12 +243,21 @@ class LimitlessMmLoopServerlessStack(Stack):
         )
         rerank_rule.add_target(targets.LambdaFunction(rerank_fn, retry_attempts=0))
 
+        # 每日 22:00 UTC(台灣 06:00)觸發摘要
+        daily_summary_rule = events.Rule(
+            self, "DailySummarySchedule",
+            rule_name="limitless-mm-daily-summary",
+            schedule=events.Schedule.cron(hour="22", minute="0"),
+            description="每日 UTC 22:00(台灣 06:00)發 Telegram 摘要",
+        )
+        daily_summary_rule.add_target(targets.LambdaFunction(daily_summary_fn, retry_attempts=0))
+
         # ---------- 6. Billing Alarm($1) + 可選 email 訂閱 ----------
         # CloudWatch Billing metric 必須在 us-east-1。
         # 跨 region 監控用 metric stream 或直接 us-east-1 stack。
         # 這裡用簡化版:Lambda invocation 異常 alarm(invocations 飆高 → 可能 bug)
         # 真正的 $1 alarm 要去 AWS Budget Console 手動設(README 會教)
-        for fn in (iterate_fn, rerank_fn):
+        for fn in (iterate_fn, rerank_fn, daily_summary_fn):
             cw.Alarm(
                 self, f"{fn.node.id}Errors",
                 metric=fn.metric_errors(period=Duration.minutes(15)),

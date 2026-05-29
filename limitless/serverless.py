@@ -256,21 +256,26 @@ def bootstrap_secrets() -> None:
     if _BOOTSTRAPPED:
         return
 
-    mapping = {
+    # 必須有的 secrets(沒拉到 = bootstrap 失敗)
+    required_mapping = {
         "SSM_TOKEN_ID_NAME": "LIMITLESS_API_TOKEN_ID",
         "SSM_API_SECRET_NAME": "LIMITLESS_API_SECRET",
         "SSM_PRIV_KEY_NAME": "BASE_PRIVATE_KEY",
     }
+    # 可選 secrets(Telegram。沒設不影響主邏輯,只是無通知)
+    optional_mapping = {
+        "SSM_TELEGRAM_BOT_TOKEN_NAME": "TELEGRAM_BOT_TOKEN",
+        "SSM_TELEGRAM_CHAT_ID_NAME": "TELEGRAM_CHAT_ID",
+    }
 
-    # 本機/EC2/ECS 已經有完整 env → 直接跳過
-    if all(os.environ.get(v) for v in mapping.values()):
+    # 本機/EC2/ECS 已經有完整必要 env → 跳過(可選的就保持當下狀態)
+    if all(os.environ.get(v) for v in required_mapping.values()):
         _BOOTSTRAPPED = True
         return
 
     import boto3
     ssm = boto3.client("ssm")
-    for src_name_env, dest_env in mapping.items():
-        # 若目的 env 已有值就略過(避免覆寫本機測試用 env)
+    for src_name_env, dest_env in required_mapping.items():
         if os.environ.get(dest_env):
             continue
         param_name = os.environ.get(src_name_env)
@@ -283,6 +288,21 @@ def bootstrap_secrets() -> None:
         except Exception as e:
             log("bootstrap_ssm_error", param=param_name, error=str(e))
             raise
+
+    # 可選 secrets — 拉不到只 log 不 raise
+    for src_name_env, dest_env in optional_mapping.items():
+        if os.environ.get(dest_env):
+            continue
+        param_name = os.environ.get(src_name_env)
+        if not param_name:
+            continue
+        try:
+            r = ssm.get_parameter(Name=param_name, WithDecryption=True)
+            val = r["Parameter"]["Value"]
+            if val and val != "REPLACE_ME":
+                os.environ[dest_env] = val
+        except Exception as e:
+            log("bootstrap_optional_ssm_skip", param=param_name, error=str(e))
 
     _BOOTSTRAPPED = True
 
