@@ -1,9 +1,9 @@
-"""EC2 free-tier 24/7 做市 stack(對等於 PolymktMmLoopStack,但全用免費資源)。
+"""EC2 free-tier 24/7 做市 stack(對等於 LimitlessMmLoopStack,但全用免費資源)。
 
 差別 vs Fargate stack:
 - ~~Fargate~~ → **EC2 t3.micro**(12 個月免費,之後 ~$7.50/月)
 - ~~Secrets Manager~~ → **SSM Parameter Store SecureString**(永久免費)
-- ~~ECR~~ → **S3 asset**(CDK 把 polymkt source 包成 zip 上傳;EC2 啟動時下載 + 本機 docker build)
+- ~~ECR~~ → **S3 asset**(CDK 把 limitless source 包成 zip 上傳;EC2 啟動時下載 + 本機 docker build)
 - 其餘相同:CloudWatch Logs / VPC default
 
 預估月成本:
@@ -12,8 +12,8 @@
 
 維運差別:
 - 你要負責 OS 安全更新(`sudo dnf update` 或讓它 auto-update)
-- 改秘密後要重啟 EC2 一次(systemd 才重新讀 /etc/polymkt/env)
-- 改 polymkt source code → 重 `cdk deploy` 會替換 EC2(新 image / 新 user-data)
+- 改秘密後要重啟 EC2 一次(systemd 才重新讀 /etc/limitless/env)
+- 改 limitless source code → 重 `cdk deploy` 會替換 EC2(新 image / 新 user-data)
 
 Session Manager 進去看現場(不用開 SSH port):
     aws ssm start-session --target <INSTANCE_ID>
@@ -48,7 +48,7 @@ def _create_secure_string_parameter(scope: Stack, id_: str, *,
     )
 
 
-class PolymktMmLoopFreeStack(Stack):
+class LimitlessMmLoopFreeStack(Stack):
     def __init__(
         self,
         scope: Construct,
@@ -62,24 +62,24 @@ class PolymktMmLoopFreeStack(Stack):
         # ---------- 1. SSM Parameter Store(SecureString,永久免費)----------
         token_id_param = _create_secure_string_parameter(
             self, "LimitlessApiTokenIdParam",
-            name="/polymkt/limitless/api-token-id",
+            name="/limitless/api-token-id",
             description="Limitless HMAC token id",
         )
         api_secret_param = _create_secure_string_parameter(
             self, "LimitlessApiSecretParam",
-            name="/polymkt/limitless/api-secret",
+            name="/limitless/api-secret",
             description="Limitless HMAC secret",
         )
         private_key_param = _create_secure_string_parameter(
             self, "BasePrivateKeyParam",
-            name="/polymkt/limitless/base-private-key",
+            name="/limitless/base-private-key",
             description="Base 鏈 EOA 私鑰",
         )
 
         # ---------- 2. CloudWatch Log Group ----------
         log_group = logs.LogGroup(
             self, "MmLoopLogs",
-            log_group_name="/polymkt/mm-loop",
+            log_group_name="/limitless/mm-loop",
             retention=logs.RetentionDays.ONE_MONTH,
             removal_policy=RemovalPolicy.DESTROY,
         )
@@ -87,7 +87,7 @@ class PolymktMmLoopFreeStack(Stack):
         # ---------- 3. S3 asset:把整個 repo 打包成 zip ----------
         # CDK 自動 zip + upload + 在 user-data 注入下載 URL
         source_asset = s3_assets.Asset(
-            self, "PolymktSource",
+            self, "LimitlessSource",
             path="..",   # repo root(infra 上一層)
             exclude=[
                 ".venv",
@@ -108,7 +108,7 @@ class PolymktMmLoopFreeStack(Stack):
         sg = ec2.SecurityGroup(
             self, "MmLoopSg",
             vpc=vpc,
-            description="polymkt mm-loop egress-only(SSM Session Manager 不用 inbound)",
+            description="limitless mm-loop egress-only(SSM Session Manager 不用 inbound)",
             allow_all_outbound=True,
         )
         # 不開任何 inbound;用 SSM Session Manager 進去(走 outbound 連 AWS endpoint)
@@ -151,7 +151,7 @@ class PolymktMmLoopFreeStack(Stack):
         user_data.add_commands(
             "#!/bin/bash",
             "set -euo pipefail",
-            "exec > >(tee /var/log/polymkt-bootstrap.log) 2>&1",
+            "exec > >(tee /var/log/limitless-bootstrap.log) 2>&1",
             "echo '[boot] start: $(date -Iseconds)'",
 
             # Amazon Linux 2023 用 dnf
@@ -159,19 +159,19 @@ class PolymktMmLoopFreeStack(Stack):
             "dnf install -y docker unzip awscli",
             "systemctl enable --now docker",
 
-            # 下載 polymkt source(CDK token 替換成真實 S3 URL)
-            "mkdir -p /opt/polymkt",
-            f"aws s3 cp s3://{source_asset.s3_bucket_name}/{source_asset.s3_object_key} /tmp/polymkt.zip",
-            "unzip -o /tmp/polymkt.zip -d /opt/polymkt",
-            "rm /tmp/polymkt.zip",
+            # 下載 limitless source(CDK token 替換成真實 S3 URL)
+            "mkdir -p /opt/limitless",
+            f"aws s3 cp s3://{source_asset.s3_bucket_name}/{source_asset.s3_object_key} /tmp/limitless.zip",
+            "unzip -o /tmp/limitless.zip -d /opt/limitless",
+            "rm /tmp/limitless.zip",
 
-            # 從 SSM 拉 secrets 寫到 /etc/polymkt/env(只 root 可讀)
-            "mkdir -p /etc/polymkt && chmod 700 /etc/polymkt",
+            # 從 SSM 拉 secrets 寫到 /etc/limitless/env(只 root 可讀)
+            "mkdir -p /etc/limitless && chmod 700 /etc/limitless",
             f"REGION={self.region}",
-            "TOKEN_ID=$(aws ssm get-parameter --name /polymkt/limitless/api-token-id --with-decryption --query Parameter.Value --output text --region $REGION)",
-            "API_SECRET=$(aws ssm get-parameter --name /polymkt/limitless/api-secret --with-decryption --query Parameter.Value --output text --region $REGION)",
-            "PRIV_KEY=$(aws ssm get-parameter --name /polymkt/limitless/base-private-key --with-decryption --query Parameter.Value --output text --region $REGION)",
-            "cat > /etc/polymkt/env <<EOF",
+            "TOKEN_ID=$(aws ssm get-parameter --name /limitless/api-token-id --with-decryption --query Parameter.Value --output text --region $REGION)",
+            "API_SECRET=$(aws ssm get-parameter --name /limitless/api-secret --with-decryption --query Parameter.Value --output text --region $REGION)",
+            "PRIV_KEY=$(aws ssm get-parameter --name /limitless/base-private-key --with-decryption --query Parameter.Value --output text --region $REGION)",
+            "cat > /etc/limitless/env <<EOF",
             "LIMITLESS_API_TOKEN_ID=$TOKEN_ID",
             "LIMITLESS_API_SECRET=$API_SECRET",
             "BASE_PRIVATE_KEY=$PRIV_KEY",
@@ -195,15 +195,15 @@ class PolymktMmLoopFreeStack(Stack):
             "MM_LOOP_USE_MICROPRICE=1",
             "MM_LOOP_EMERGENCY_HOURS=24",
             "EOF",
-            "chmod 600 /etc/polymkt/env",
+            "chmod 600 /etc/limitless/env",
 
             # Build image
-            "cd /opt/polymkt && docker build -t polymkt:latest .",
+            "cd /opt/limitless && docker build -t limitless:latest .",
 
             # systemd unit
-            "cat > /etc/systemd/system/polymkt-mm.service <<'EOF'",
+            "cat > /etc/systemd/system/limitless-mm.service <<'EOF'",
             "[Unit]",
-            "Description=polymkt mm-loop 24/7 market maker",
+            "Description=limitless mm-loop 24/7 market maker",
             "After=docker.service network-online.target",
             "Requires=docker.service",
             "Wants=network-online.target",
@@ -212,21 +212,21 @@ class PolymktMmLoopFreeStack(Stack):
             "Restart=always",
             "RestartSec=15",
             "TimeoutStopSec=70",
-            "ExecStartPre=-/usr/bin/docker rm -f polymkt-mm",
-            "ExecStart=/usr/bin/docker run --rm --name polymkt-mm "
-                "--env-file /etc/polymkt/env "
+            "ExecStartPre=-/usr/bin/docker rm -f limitless-mm",
+            "ExecStart=/usr/bin/docker run --rm --name limitless-mm "
+                "--env-file /etc/limitless/env "
                 "--log-driver=awslogs "
                 f"--log-opt awslogs-region={self.region} "
                 f"--log-opt awslogs-group={log_group.log_group_name} "
                 "--log-opt awslogs-stream=mm-loop-$(hostname) "
-                "polymkt:latest",
-            "ExecStop=/usr/bin/docker stop -t 60 polymkt-mm",
+                "limitless:latest",
+            "ExecStop=/usr/bin/docker stop -t 60 limitless-mm",
             "",
             "[Install]",
             "WantedBy=multi-user.target",
             "EOF",
             "systemctl daemon-reload",
-            "systemctl enable --now polymkt-mm",
+            "systemctl enable --now limitless-mm",
             "echo '[boot] done: $(date -Iseconds)'",
         )
 
@@ -265,11 +265,11 @@ class PolymktMmLoopFreeStack(Stack):
             "SetSecretsCommand",
             value=(
                 "aws ssm put-parameter --overwrite --type SecureString "
-                f"--name /polymkt/limitless/api-token-id --value <token-id>  && "
+                f"--name /limitless/api-token-id --value <token-id>  && "
                 "aws ssm put-parameter --overwrite --type SecureString "
-                f"--name /polymkt/limitless/api-secret --value <secret>  && "
+                f"--name /limitless/api-secret --value <secret>  && "
                 "aws ssm put-parameter --overwrite --type SecureString "
-                f"--name /polymkt/limitless/base-private-key --value 0x<priv-key>"
+                f"--name /limitless/base-private-key --value 0x<priv-key>"
             ),
             description="部署完跑這串(替換三個值)。改完要 reboot instance 才生效。",
         )

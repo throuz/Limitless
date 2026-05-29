@@ -37,7 +37,7 @@ class LimitlessClient:
             base_url=host,
             timeout=timeout,
             headers={
-                "User-Agent": "polymkt/0.1",
+                "User-Agent": "limitless/0.1",
                 "Accept": "application/json",
             },
         )

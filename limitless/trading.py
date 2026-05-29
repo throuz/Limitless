@@ -246,7 +246,7 @@ class LimitlessTradingClient:
 
 async def derive_hmac_credentials(
     privy_identity_token: str,
-    label: str = "polymkt-bot",
+    label: str = "limitless-bot",
     scopes: list[str] | None = None,
     base_url: str = "https://api.limitless.exchange",
 ) -> tuple[str, str]:

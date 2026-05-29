@@ -1,4 +1,4 @@
-# polymkt mm-loop AWS 部署
+# limitless mm-loop AWS 部署
 
 把 `mm-loop` 跑在 AWS 24/7,讓做市自動換市場、結算自動退場、不用本機開機。
 
@@ -144,15 +144,15 @@ STACK_TIER=managed STACK_EXECUTE=1 .venv/bin/cdk deploy
 
 ```bash
 aws ssm put-parameter --overwrite --type SecureString \
-  --name /polymkt/limitless/api-token-id \
+  --name /limitless/api-token-id \
   --value "<你的 LIMITLESS_API_TOKEN_ID>"
 
 aws ssm put-parameter --overwrite --type SecureString \
-  --name /polymkt/limitless/api-secret \
+  --name /limitless/api-secret \
   --value "<你的 LIMITLESS_API_SECRET>"
 
 aws ssm put-parameter --overwrite --type SecureString \
-  --name /polymkt/limitless/base-private-key \
+  --name /limitless/base-private-key \
   --value "0x<你的 BASE 私鑰>"
 ```
 
@@ -160,15 +160,15 @@ aws ssm put-parameter --overwrite --type SecureString \
 
 ```bash
 aws secretsmanager put-secret-value \
-  --secret-id polymkt/limitless/api-token-id \
+  --secret-id limitless/limitless/api-token-id \
   --secret-string "<你的 LIMITLESS_API_TOKEN_ID>"
 
 aws secretsmanager put-secret-value \
-  --secret-id polymkt/limitless/api-secret \
+  --secret-id limitless/limitless/api-secret \
   --secret-string "<你的 LIMITLESS_API_SECRET>"
 
 aws secretsmanager put-secret-value \
-  --secret-id polymkt/limitless/base-private-key \
+  --secret-id limitless/limitless/base-private-key \
   --secret-string "0x<你的 BASE 私鑰>"
 ```
 
@@ -181,20 +181,20 @@ aws secretsmanager put-secret-value \
 ```bash
 # 強制把現有的 Lambda 容器作廢(下次觸發保證 cold start)
 aws lambda update-function-configuration \
-  --function-name polymkt-mm-iterate \
-  --environment "Variables={DDB_TABLE_NAME=polymkt-mm-state}"  # 隨便改一個 env 就好
+  --function-name limitless-mm-iterate \
+  --environment "Variables={DDB_TABLE_NAME=limitless-mm-state}"  # 隨便改一個 env 就好
 ```
 
 或更乾脆,直接手動觸發一次 rerank:
 
 ```bash
-aws lambda invoke --function-name polymkt-mm-rerank --invocation-type RequestResponse /tmp/out.json && cat /tmp/out.json
+aws lambda invoke --function-name limitless-mm-rerank --invocation-type RequestResponse /tmp/out.json && cat /tmp/out.json
 ```
 
 #### Free tier:
 
 ```bash
-# user-data 在 boot 時讀 SSM 寫到 /etc/polymkt/env;reboot 後重新讀
+# user-data 在 boot 時讀 SSM 寫到 /etc/limitless/env;reboot 後重新讀
 aws ec2 reboot-instances --instance-ids <INSTANCE_ID>
 ```
 
@@ -202,15 +202,15 @@ aws ec2 reboot-instances --instance-ids <INSTANCE_ID>
 
 ```bash
 aws ecs update-service \
-  --cluster polymkt-mm-loop \
-  --service polymkt-mm-loop \
+  --cluster limitless-mm-loop \
+  --service limitless-mm-loop \
   --force-new-deployment
 ```
 
 ### 8. 看 log
 
 ```bash
-aws logs tail /polymkt/mm-loop --follow
+aws logs tail /limitless/mm-loop --follow
 ```
 
 正常運作會看到類似:
@@ -229,12 +229,12 @@ aws logs tail /polymkt/mm-loop --follow
 CDK stack 的 environment variables 改完跑:
 ```bash
 .venv/bin/cdk deploy
-aws ecs update-service --cluster polymkt-mm-loop --service polymkt-mm-loop --force-new-deployment
+aws ecs update-service --cluster limitless-mm-loop --service limitless-mm-loop --force-new-deployment
 ```
 
 ### 改程式(要重 build)
 
-改完 polymkt code 後:
+改完 limitless code 後:
 ```bash
 .venv/bin/cdk deploy  # 自動偵測 image 變化、重 build、push、滾動更新
 ```
@@ -249,24 +249,24 @@ Lambda 沒有「進去看」的概念,只有 log 和狀態:
 
 ```bash
 # 看 iterate logs
-aws logs tail /aws/lambda/polymkt-mm-iterate --follow --format short
+aws logs tail /aws/lambda/limitless-mm-iterate --follow --format short
 
 # 看 rerank logs
-aws logs tail /aws/lambda/polymkt-mm-rerank --follow --format short
+aws logs tail /aws/lambda/limitless-mm-rerank --follow --format short
 
 # 看 DynamoDB 目前狀態
-aws dynamodb scan --table-name polymkt-mm-state --output json | jq
+aws dynamodb scan --table-name limitless-mm-state --output json | jq
 
 # 看哪些市場在跑
-aws dynamodb get-item --table-name polymkt-mm-state \
+aws dynamodb get-item --table-name limitless-mm-state \
   --key '{"pk": {"S": "active"}}' --output json | jq -r '.Item.slugs.L[].S'
 
 # 看全域累計
-aws dynamodb get-item --table-name polymkt-mm-state \
+aws dynamodb get-item --table-name limitless-mm-state \
   --key '{"pk": {"S": "global"}}' --output json | jq
 
 # 手動觸發 rerank
-aws lambda invoke --function-name polymkt-mm-rerank \
+aws lambda invoke --function-name limitless-mm-rerank \
   --invocation-type RequestResponse /tmp/out.json && cat /tmp/out.json
 ```
 
@@ -277,22 +277,22 @@ aws lambda invoke --function-name polymkt-mm-rerank \
 aws ssm start-session --target <INSTANCE_ID>
 
 # 進去後常用:
-sudo journalctl -u polymkt-mm -f          # 看 systemd 服務 log
+sudo journalctl -u limitless-mm -f          # 看 systemd 服務 log
 sudo docker ps                             # 確認 container 在跑
-sudo docker logs polymkt-mm -f             # 看 container stdout
-sudo systemctl restart polymkt-mm          # 強制重啟服務
-cat /var/log/polymkt-bootstrap.log         # 看 user-data boot 過程
+sudo docker logs limitless-mm -f             # 看 container stdout
+sudo systemctl restart limitless-mm          # 強制重啟服務
+cat /var/log/limitless-bootstrap.log         # 看 user-data boot 過程
 ```
 
 #### Managed:
 
 ```bash
 # 1. 拿 task ARN
-aws ecs list-tasks --cluster polymkt-mm-loop --service-name polymkt-mm-loop
+aws ecs list-tasks --cluster limitless-mm-loop --service-name limitless-mm-loop
 
 # 2. 進去
 aws ecs execute-command \
-  --cluster polymkt-mm-loop \
+  --cluster limitless-mm-loop \
   --task <TASK_ARN> \
   --container mm-loop \
   --interactive --command /bin/bash
@@ -304,15 +304,15 @@ aws ecs execute-command \
 
 ```bash
 # 暫停(EventBridge rule disable,Lambda 就不會被觸發)
-aws events disable-rule --name polymkt-mm-iterate
-aws events disable-rule --name polymkt-mm-rerank
+aws events disable-rule --name limitless-mm-iterate
+aws events disable-rule --name limitless-mm-rerank
 
 # 注意:暫停前最好先撤掉現有 LM 訂單(否則它們會留在 orderbook)
 # 改 LIMITLESS_EXECUTE=0 然後觸發一次 iterate → iterate 內的 cancel_all 會清
 
 # 恢復
-aws events enable-rule --name polymkt-mm-iterate
-aws events enable-rule --name polymkt-mm-rerank
+aws events enable-rule --name limitless-mm-iterate
+aws events enable-rule --name limitless-mm-rerank
 ```
 
 #### Free tier:
@@ -329,10 +329,10 @@ aws ec2 start-instances --instance-ids <INSTANCE_ID>
 
 ```bash
 # 暫停(不刪 stack,只把 desired 設 0)
-aws ecs update-service --cluster polymkt-mm-loop --service polymkt-mm-loop --desired-count 0
+aws ecs update-service --cluster limitless-mm-loop --service limitless-mm-loop --desired-count 0
 
 # 恢復
-aws ecs update-service --cluster polymkt-mm-loop --service polymkt-mm-loop --desired-count 1
+aws ecs update-service --cluster limitless-mm-loop --service limitless-mm-loop --desired-count 1
 ```
 
 ### 完全拆掉
@@ -342,9 +342,9 @@ aws ecs update-service --cluster polymkt-mm-loop --service polymkt-mm-loop --des
 .venv/bin/cdk destroy
 
 # 要連 secret 一起刪(注意:Secret 有 7 天 recovery window)
-aws secretsmanager delete-secret --secret-id polymkt/limitless/api-token-id --force-delete-without-recovery
-aws secretsmanager delete-secret --secret-id polymkt/limitless/api-secret --force-delete-without-recovery
-aws secretsmanager delete-secret --secret-id polymkt/limitless/base-private-key --force-delete-without-recovery
+aws secretsmanager delete-secret --secret-id limitless/limitless/api-token-id --force-delete-without-recovery
+aws secretsmanager delete-secret --secret-id limitless/limitless/api-secret --force-delete-without-recovery
+aws secretsmanager delete-secret --secret-id limitless/limitless/base-private-key --force-delete-without-recovery
 ```
 
 ## 安全
@@ -355,16 +355,16 @@ aws secretsmanager delete-secret --secret-id polymkt/limitless/base-private-key 
 2. **Secrets Manager 加密**:AWS KMS 加密 at rest,只有 ECS task role 能讀
 3. **Task role 最小權限**:只能讀指定 3 個 secret,沒其他 AWS 權限
 4. **不出現在 task definition 明文**:`ecs.Secret.from_secrets_manager` 確保 secret 不會出現在 ECS console / API 回應
-5. **容器非 root 跑**:Dockerfile 已用 `polymkt` 使用者
+5. **容器非 root 跑**:Dockerfile 已用 `limitless` 使用者
 
 ### 安全限額(雙保險)
 
 | 層 | 機制 | 預設 |
 |---|---|---|
 | 1. CDK env | `LIMITLESS_EXECUTE` | 部署時 `STACK_EXECUTE=1` 才設 1 |
-| 2. polymkt | `LIMITLESS_EXECUTE != 1` → 永遠 dry-run | 雙保險 |
-| 3. polymkt | `LIMITLESS_MAX_PER_ORDER`(單筆) | 容器內預設 $30 |
-| 4. polymkt | `LIMITLESS_MAX_PER_SESSION`(累計) | 容器內預設 $500 |
+| 2. limitless | `LIMITLESS_EXECUTE != 1` → 永遠 dry-run | 雙保險 |
+| 3. limitless | `LIMITLESS_MAX_PER_ORDER`(單筆) | 容器內預設 $30 |
+| 4. limitless | `LIMITLESS_MAX_PER_SESSION`(累計) | 容器內預設 $500 |
 | 5. mm-loop | `MM_LOOP_TOTAL_CAPITAL`(全域) | $500 |
 
 要 100% 確保 dry-run,部署時**不要**設 `STACK_EXECUTE=1`。
@@ -383,26 +383,26 @@ aws secretsmanager delete-secret --secret-id polymkt/limitless/base-private-key 
 ### Task 一直 fail / restart
 
 ```bash
-aws ecs describe-services --cluster polymkt-mm-loop --services polymkt-mm-loop \
+aws ecs describe-services --cluster limitless-mm-loop --services limitless-mm-loop \
   --query 'services[0].events[0:5]'
 ```
 
 最常見原因:
 - Secret 沒填值 → task 起不來。回到步驟 6 把 secret 填好。
 - 私鑰格式錯(沒 0x 前綴或長度不對) → ecs logs 看 `Web3 / EOA` 相關 error
-- HMAC token 過期 → 重新跑本機 `polymkt limitless auth-derive`,更新 secret
+- HMAC token 過期 → 重新跑本機 `limitless limitless auth-derive`,更新 secret
 
 ### CloudWatch 看不到 log
 
 ```bash
 # 確認 log group 存在
-aws logs describe-log-groups --log-group-name-prefix /polymkt/mm-loop
+aws logs describe-log-groups --log-group-name-prefix /limitless/mm-loop
 ```
 
 ### 改了程式但容器還跑舊版
 
 ```bash
-# CDK 偵測不到 polymkt/ 的變化是很罕見的;強制重 build
+# CDK 偵測不到 limitless/ 的變化是很罕見的;強制重 build
 .venv/bin/cdk deploy --force
 ```
 

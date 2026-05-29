@@ -19,10 +19,10 @@ import os
 import time
 import traceback
 
-from polymkt.limitless.client import LimitlessClient
-from polymkt.limitless.market_maker import MakerConfig, MarketMaker
-from polymkt.limitless.trading import LimitlessTradingClient
-from polymkt.limitless.serverless import (
+from limitless.client import LimitlessClient
+from limitless.market_maker import MakerConfig, MarketMaker
+from limitless.trading import LimitlessTradingClient
+from limitless.serverless import (
     ServerlessCfg,
     bootstrap_secrets,
     deserialize_tox,

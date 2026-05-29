@@ -1,11 +1,11 @@
 """統一 CLI 入口。
 
 子命令結構：
-- polymkt polymarket scan       — Polymarket 套利掃描（**台灣無法下單**，僅作分析）
-- polymkt polymarket closest    — Polymarket 最接近套利的市場
-- polymkt limitless scan        — Limitless 套利掃描（**台灣可用**）
-- polymkt limitless closest     — Limitless 最接近套利的市場
-- polymkt crossarb              — 跨平台 Polymarket↔Limitless 價差訊號
+- limitless pm scan       — Polymarket 套利掃描（**台灣無法下單**，僅作分析）
+- limitless pm closest    — Polymarket 最接近套利的市場
+- limitless scan        — Limitless 套利掃描（**台灣可用**）
+- limitless closest     — Limitless 最接近套利的市場
+- limitless crossarb              — 跨平台 Polymarket↔Limitless 價差訊號
 """
 
 from __future__ import annotations
@@ -23,8 +23,8 @@ from rich.text import Text
 
 from .polymarket.clients import ClobClient, GammaClient
 from .polymarket.scanner import scan as pm_scan
-from .limitless.client import LimitlessClient
-from .limitless.scanner import scan as lm_scan, closest as lm_closest
+from .client import LimitlessClient
+from .scanner import scan as lm_scan, closest as lm_closest
 from .crossarb import find_cross_pairs
 
 
@@ -38,7 +38,7 @@ def polymarket_group() -> None:
     """Polymarket 工具(讀取分析、oracle、訊號)。
 
     台灣 close-only,Polymarket 只當「觀察 + 輔助 oracle」用。
-    主交易場在 [polymkt limitless](根目錄命令)。
+    主交易場在 [limitless](根目錄命令)。
     """
 
 
@@ -139,9 +139,9 @@ def limitless_group() -> None:
     """Limitless Exchange 操作(主交易場)。
 
     所有命令也可以直接呼叫(不用 limitless 前綴),例如:
-        polymkt mm-loop    ≡ polymkt limitless mm-loop
-        polymkt mm-rank    ≡ polymkt limitless mm-rank
-        polymkt scan       ≡ polymkt limitless scan
+        limitless mm-loop    ≡ limitless mm-loop
+        limitless mm-rank    ≡ limitless mm-rank
+        limitless scan       ≡ limitless scan
     """
 
 
@@ -169,7 +169,7 @@ def lm_scan_cmd(max_markets: int, min_edge_bps: int, probe_shares: float,
         console.rule(f"[bold]Limitless：找到 {len(opps)} 個機會[/bold]")
         if not opps:
             console.print(Panel(
-                "沒有發現符合閾值的機會。試試 `polymkt limitless closest` 看市場效率。",
+                "沒有發現符合閾值的機會。試試 `limitless closest` 看市場效率。",
                 border_style="yellow"))
             return
         t = Table(show_lines=True)
@@ -283,19 +283,19 @@ def lm_closest_cmd(max_markets: int, min_volume_usd: float, top: int) -> None:
 @limitless_group.command(name="auth-derive")
 @click.option("--privy-token", required=True, envvar="PRIVY_TOKEN",
               help="從瀏覽器 DevTools 拿到的 Privy `token`（不是 privy_access_token）")
-@click.option("--label", default="polymkt-bot", help="API token 標籤")
+@click.option("--label", default="limitless-bot", help="API token 標籤")
 def lm_auth_derive_cmd(privy_token: str, label: str) -> None:
     """一次性：用 Privy token 換 HMAC 永久 token。
 
     流程：
       1. 用錢包登入 https://limitless.exchange
       2. 開 DevTools → Application → LocalStorage/Cookies 找 Privy `token`
-      3. 執行：polymkt limitless auth-derive --privy-token <token>
+      3. 執行：limitless auth-derive --privy-token <token>
       4. 把回傳的 token_id + secret 寫進 .env
 
     [bold red]Secret 只會顯示一次！[/bold red]
     """
-    from .limitless.trading import derive_hmac_credentials
+    from .trading import derive_hmac_credentials
 
     async def _run():
         try:
@@ -334,7 +334,7 @@ def lm_place_order_cmd(slug: str, side: str, outcome: str, price: float,
                        size: float, order_type: str, post_only: bool,
                        execute: bool) -> None:
     """手動下一筆訂單。預設 dry-run，加 --execute 才會真實送出。"""
-    from .limitless.trading import LimitlessTradingClient, OrderRequest
+    from .trading import LimitlessTradingClient, OrderRequest
 
     async def _run():
         # 先讀市場拿 token_id（YES 或 NO）
@@ -470,8 +470,8 @@ def lm_make_market_cmd(slug: str, capital_usdc: float, quote_size: float,
 
     [yellow]預設 dry-run[/yellow]：只印「將要做什麼」、不真的送 API。
     """
-    from .limitless.market_maker import MakerConfig, MarketMaker
-    from .limitless.trading import LimitlessTradingClient
+    from .market_maker import MakerConfig, MarketMaker
+    from .trading import LimitlessTradingClient
 
     cfg = MakerConfig(
         slug=slug,
@@ -651,7 +651,7 @@ def lm_mm_rank_cmd(max_markets: int, min_volume_usd: float,
     - volume：log 量級正向加成（避免零量市場）
     - news_risk：標題命中高風險關鍵字數，當分母懲罰
     """
-    from .limitless.scanner import LimitlessClient  # 同模組
+    from .scanner import LimitlessClient  # 同模組
     import math
 
     async def _run():
@@ -753,7 +753,7 @@ def lm_mm_rank_cmd(max_markets: int, min_volume_usd: float,
             console.print(t)
             console.print(Panel(
                 "用 top 候選跑做市：\n"
-                "  [bold]polymkt limitless make-market --slug <slug> --oracle pm[/bold]\n"
+                "  [bold]limitless make-market --slug <slug> --oracle pm[/bold]\n"
                 "🪞 = 有 PM 鏡像（強烈建議搭 --oracle pm）；🛑 = 新聞風險關鍵字命中",
                 border_style="dim",
             ))
@@ -806,8 +806,8 @@ def lm_mm_loop_cmd(total_capital: float, max_positions: int, capital_per_market:
 
     收到 SIGTERM / SIGINT → 全部 cancel + 收乾淨後退出（給容器 graceful shutdown 用）。
     """
-    from .limitless.mm_loop import MMLoop, MMLoopConfig, install_signal_handlers
-    from .limitless.trading import LimitlessTradingClient
+    from .mm_loop import MMLoop, MMLoopConfig, install_signal_handlers
+    from .trading import LimitlessTradingClient
 
     if execute:
         os.environ["LIMITLESS_EXECUTE"] = "1"
@@ -987,22 +987,22 @@ def crossarb_cmd(min_event_similarity: float, min_sub_match: float,
 
 @click.group()
 def cli() -> None:
-    """polymkt — Limitless Exchange 做市工具(+ Polymarket 輔助 oracle)。
+    """limitless — Limitless Exchange 做市工具(+ Polymarket 輔助 oracle)。
 
     主交易場:Limitless(Base 鏈,台灣可用)。
     輔助:Polymarket 作為公平價 oracle 和訊號源(台灣 close-only,無法新開倉)。
 
     常用命令:
-        polymkt mm-loop          # 24/7 自動做市(主力)
-        polymkt mm-rank          # 找適合做市的市場
-        polymkt make-market      # 單市場做市
-        polymkt place-order      # 手動單筆下單
-        polymkt scan / closest   # Limitless 套利掃描
-        polymkt pnl summary      # 看 PnL 紀錄
-        polymkt crossarb         # 跨平台價差訊號
+        limitless mm-loop          # 24/7 自動做市(主力)
+        limitless mm-rank          # 找適合做市的市場
+        limitless make-market      # 單市場做市
+        limitless place-order      # 手動單筆下單
+        limitless scan / closest   # Limitless 套利掃描
+        limitless pnl summary      # 看 PnL 紀錄
+        limitless crossarb         # 跨平台價差訊號
 
-        polymkt pm scan          # Polymarket 掃描(觀察)
-        polymkt whales list      # Polymarket 鯨魚追蹤
+        limitless pm scan          # Polymarket 掃描(觀察)
+        limitless whales list      # Polymarket 鯨魚追蹤
 
     部署:cd infra && cdk deploy  (見 infra/README.md)
     """
@@ -1049,7 +1049,7 @@ def crossarb_execute_cmd(min_event_similarity: float, min_pm_liquidity: float,
 
     [bold]預設行為[/bold]：dry-run，列出將要做什麼，**不真的下單**。
     """
-    from .limitless.trading import LimitlessTradingClient, OrderRequest
+    from .trading import LimitlessTradingClient, OrderRequest
 
     async def _run():
         with console.status("[cyan]擷取跨平台價差..."):
@@ -1076,7 +1076,7 @@ def crossarb_execute_cmd(min_event_similarity: float, min_pm_liquidity: float,
             console.print(f"[red]{e}[/red]")
             console.print(Panel(
                 "尚未設定 Limitless 認證或私鑰。\n"
-                "請先跑：[bold]polymkt limitless auth-derive[/bold] 取得 HMAC token，\n"
+                "請先跑：[bold]limitless auth-derive[/bold] 取得 HMAC token，\n"
                 "並把 token_id / secret / BASE_PRIVATE_KEY 寫入 .env。\n\n"
                 "[yellow]這次跑出的價差結果如下（純分析、未下單）：[/yellow]",
                 border_style="yellow",
@@ -1230,7 +1230,7 @@ def whales_list_cmd(trades_limit: int, min_trade: float, min_value: float,
         console.print(Panel(
             "把要追蹤的 wallet 寫進 .env（逗號分隔）：\n"
             "[bold]WHALE_WALLETS=0xc97b...,0x204f...[/bold]\n"
-            "然後跑 [bold]polymkt whales watch[/bold] 即時監控他們的新動作",
+            "然後跑 [bold]limitless whales watch[/bold] 即時監控他們的新動作",
             border_style="dim",
         ))
 
@@ -1325,7 +1325,7 @@ def whales_follow_cmd(wallets: str | None, lookback_min: int, min_trade: float,
       4. 預設 dry-run；加 --execute 才真實送出
     """
     from .polymarket.whales import find_whale_signals, attach_limitless_markets, PolymarketDataClient, score_wallet
-    from .limitless.trading import LimitlessTradingClient, OrderRequest
+    from .trading import LimitlessTradingClient, OrderRequest
     import time
 
     wallet_str = wallets or os.environ.get("WHALE_WALLETS", "").strip()
@@ -1438,8 +1438,8 @@ def pnl_group() -> None:
 
 @pnl_group.command(name="init")
 def pnl_init_cmd() -> None:
-    """初始化 PnL 資料庫(自動建立 ~/.polymkt/pnl.db)。"""
-    from .limitless import pnl
+    """初始化 PnL 資料庫(自動建立 ~/.limitless/pnl.db)。"""
+    from . import pnl
     pnl.init_db()
     console.print(f"[green]✓[/green] PnL DB 初始化:{pnl.DB_PATH}")
 
@@ -1448,7 +1448,7 @@ def pnl_init_cmd() -> None:
 @click.confirmation_option(prompt="確定要砍掉所有 PnL 紀錄?")
 def pnl_reset_cmd() -> None:
     """砍掉所有 PnL 紀錄(慎用,不可復原)。"""
-    from .limitless import pnl
+    from . import pnl
     pnl.reset_db()
     console.print(f"[yellow]⚠[/yellow] PnL DB 已重置:{pnl.DB_PATH}")
 
@@ -1459,8 +1459,8 @@ def pnl_snapshot_cmd() -> None:
 
     建議放進 cron 每天跑一次,或讓 mm-loop 自動做。
     """
-    from .limitless import pnl
-    from .limitless.trading import LimitlessTradingClient
+    from . import pnl
+    from .trading import LimitlessTradingClient
     from eth_account import Account
 
     priv = os.environ.get("BASE_PRIVATE_KEY")
@@ -1496,8 +1496,8 @@ def pnl_snapshot_cmd() -> None:
 @pnl_group.command(name="settlements")
 def pnl_settlements_cmd() -> None:
     """偵測已結算市場(過去有部位但現在 portfolio 沒了),寫入 PnL DB。"""
-    from .limitless import pnl
-    from .limitless.trading import LimitlessTradingClient
+    from . import pnl
+    from .trading import LimitlessTradingClient
 
     async def _run():
         try:
@@ -1538,7 +1538,7 @@ def pnl_settlements_cmd() -> None:
 @click.option("--days", type=int, default=30, help="統計區間(天)")
 def pnl_summary_cmd(days: int) -> None:
     """整體 PnL 摘要。"""
-    from .limitless import pnl
+    from . import pnl
     s = pnl.summary_stats(days=days)
 
     fill_rate = (s.orders_accepted / s.orders_total * 100) if s.orders_total else 0
@@ -1582,7 +1582,7 @@ def pnl_summary_cmd(days: int) -> None:
 @click.option("--days", type=int, default=14, help="顯示幾天")
 def pnl_daily_cmd(days: int) -> None:
     """每日 PnL 分解。"""
-    from .limitless import pnl
+    from . import pnl
     rows = pnl.daily_breakdown(days=days)
     if not rows:
         console.print("[yellow]沒有資料(可能還沒開始跑 bot,或還沒有 fills)[/yellow]")
@@ -1615,7 +1615,7 @@ def pnl_daily_cmd(days: int) -> None:
 @click.option("--days", type=int, default=30)
 def pnl_markets_cmd(days: int) -> None:
     """按市場分解 PnL。"""
-    from .limitless import pnl
+    from . import pnl
     rows = pnl.per_market_breakdown(days=days)
     if not rows:
         console.print("[yellow]沒資料[/yellow]")
@@ -1646,15 +1646,15 @@ def pnl_markets_cmd(days: int) -> None:
     console.print(t)
 
 
-cli.add_command(polymarket_group)        # `polymkt pm ...`
-cli.add_command(limitless_group)         # `polymkt limitless ...`(完整命名空間)
-cli.add_command(whales_group)            # `polymkt whales ...`
-cli.add_command(crossarb_cmd)            # `polymkt crossarb`
-cli.add_command(crossarb_execute_cmd)    # `polymkt crossarb-execute`
-cli.add_command(pnl_group)               # `polymkt pnl ...`
+cli.add_command(polymarket_group)        # `limitless pm ...`
+cli.add_command(limitless_group)         # `limitless ...`(完整命名空間)
+cli.add_command(whales_group)            # `limitless whales ...`
+cli.add_command(crossarb_cmd)            # `limitless crossarb`
+cli.add_command(crossarb_execute_cmd)    # `limitless crossarb-execute`
+cli.add_command(pnl_group)               # `limitless pnl ...`
 
 
-# ---------- Limitless 命令的 top-level 捷徑(`polymkt mm-loop` ≡ `polymkt limitless mm-loop`)----------
+# ---------- Limitless 命令的 top-level 捷徑(`limitless mm-loop` ≡ `limitless mm-loop`)----------
 
 for _name in ("scan", "closest", "auth-derive", "place-order",
               "make-market", "mm-rank", "mm-loop"):

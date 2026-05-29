@@ -15,8 +15,8 @@ import time
 import traceback
 from datetime import datetime, timezone
 
-from polymkt.limitless.client import LimitlessClient
-from polymkt.limitless.serverless import (
+from limitless.client import LimitlessClient
+from limitless.serverless import (
     ServerlessCfg,
     bootstrap_secrets,
     get_table,

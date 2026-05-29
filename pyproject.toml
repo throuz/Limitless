@@ -1,5 +1,5 @@
 [project]
-name = "polymkt"
+name = "limitless-mm"
 version = "0.9.0"
 description = "Limitless Exchange 做市工具 + Polymarket 輔助 oracle(台灣可用版)"
 readme = "README.md"
@@ -18,11 +18,11 @@ trade = [
 ]
 
 [project.scripts]
-polymkt = "polymkt.cli:main"
+limitless = "limitless.cli:main"
 
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["polymkt*"]
+include = ["limitless*"]

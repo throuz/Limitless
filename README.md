@@ -1,4 +1,4 @@
-# polymkt — Limitless Exchange 做市工具(台灣可用版)
+# limitless — Limitless Exchange 做市工具(台灣可用版)
 
 > ⚠️ **免責聲明**:這套工具**不保證獲利**。預測市場有真實滑價、流動性、結算爭議等風險。
 > 工具只是降低「發現機會 + 自動執行」的難度。
@@ -29,8 +29,8 @@ cd /Users/mac/Projects/limitless
 # 只要分析、不下單可改用：.venv/bin/pip install -e .
 ```
 
-> ⚠️ **若 `.venv/bin/polymkt` 拋 `bad interpreter` 錯誤**:venv 是在舊路徑建的(shebang 寫死)。
-> 全域替代寫法:把下面所有 `.venv/bin/polymkt` 換成 `.venv/bin/python -m polymkt.cli`,功能完全相同。
+> ⚠️ **若 `.venv/bin/limitless` 拋 `bad interpreter` 錯誤**:venv 是在舊路徑建的(shebang 寫死)。
+> 全域替代寫法:把下面所有 `.venv/bin/limitless` 換成 `.venv/bin/python -m limitless.cli`,功能完全相同。
 > 永久解法:`rm -rf .venv` 然後重跑上面的 venv 建立指令。
 
 ## 啟用自動下單（一次性設定）
@@ -48,7 +48,7 @@ cd /Users/mac/Projects/limitless
 
 ```bash
 # 一次性：用瀏覽器登入 limitless.exchange 後從 DevTools 拿 Privy token
-.venv/bin/polymkt limitless auth-derive --privy-token <貼上 Privy token>
+.venv/bin/limitless auth-derive --privy-token <貼上 Privy token>
 ```
 
 把回傳的 token_id + secret **立即**填入 `.env`（secret 只顯示一次）：
@@ -64,7 +64,7 @@ BASE_PRIVATE_KEY=0x...   # 獨立 wallet 的私鑰(0x + 64 hex,共 66 字元)
 ### 3. 跑 dry-run 看看會做什麼
 
 ```bash
-.venv/bin/polymkt crossarb-execute --min-diff-pct 5 --max-positions 3 --notional-per-trade 10
+.venv/bin/limitless crossarb-execute --min-diff-pct 5 --max-positions 3 --notional-per-trade 10
 # 仍是 DRY-RUN，列印「將要做什麼」但不真的下單
 ```
 
@@ -72,14 +72,14 @@ BASE_PRIVATE_KEY=0x...   # 獨立 wallet 的私鑰(0x + 64 hex,共 66 字元)
 
 ```bash
 # 加 --execute 並設 LIMITLESS_EXECUTE=1
-LIMITLESS_EXECUTE=1 .venv/bin/polymkt crossarb-execute \
+LIMITLESS_EXECUTE=1 .venv/bin/limitless crossarb-execute \
   --min-diff-pct 5 --max-positions 3 --notional-per-trade 10 --execute
 ```
 
 或單筆手動下單：
 
 ```bash
-LIMITLESS_EXECUTE=1 .venv/bin/polymkt limitless place-order \
+LIMITLESS_EXECUTE=1 .venv/bin/limitless place-order \
   --slug <market-slug> --side BUY --outcome YES \
   --price 0.30 --size 30 --order-type GTC --execute
 ```
@@ -92,17 +92,17 @@ LIMITLESS_EXECUTE=1 .venv/bin/polymkt limitless place-order \
 
 ```bash
 # 1. 列出近期最有 alpha 的鯨魚（dollar-weighted ROI × log 量級）
-.venv/bin/polymkt whales list --top 10
+.venv/bin/limitless whales list --top 10
 
 # 2. 挑你想追的 wallet，寫進 .env：
 #    WHALE_WALLETS=0xc97b...,0x42c99f...
 #    或直接 --wallets 帶入
 
 # 3. 監控他們的新動作（看訊號，不下單）
-.venv/bin/polymkt whales watch --lookback-min 60 --min-trade 500
+.venv/bin/limitless whales watch --lookback-min 60 --min-trade 500
 
 # 4. 自動跟單（dry-run）
-.venv/bin/polymkt whales follow --lookback-min 60 --min-trade 500 \
+.venv/bin/limitless whales follow --lookback-min 60 --min-trade 500 \
   --max-positions 3 --notional-per-trade 10
 ```
 
@@ -163,7 +163,7 @@ YES mid = $0.30, NO mid = $0.70 → 兩邊各扣 1pp 偏移
 
 ```bash
 # 先 dry-run 看設定是否合理
-.venv/bin/python -m polymkt.cli limitless make-market \
+.venv/bin/python -m limitless.cli limitless make-market \
   --slug <some-market-slug> \
   --capital 100 \
   --quote-size 20 \
@@ -175,7 +175,7 @@ YES mid = $0.30, NO mid = $0.70 → 兩邊各扣 1pp 偏移
   --duration 600
 
 # 真的下單(加 --execute)
-LIMITLESS_EXECUTE=1 .venv/bin/python -m polymkt.cli limitless make-market \
+LIMITLESS_EXECUTE=1 .venv/bin/python -m limitless.cli limitless make-market \
   --slug <some-market-slug> --capital 100 --quote-size 20 \
   --oracle pm --execute
 ```
@@ -204,7 +204,7 @@ LIMITLESS_EXECUTE=1 .venv/bin/python -m polymkt.cli limitless make-market \
 
 ### 怎麼選市場
 
-最直接的方法:跑 [`mm-rank`](#polymkt-limitless-mm-rank--自動排序最適合做市的市場) 自動排序。
+最直接的方法:跑 [`mm-rank`](#mm-rank--自動排序最適合做市的市場) 自動排序。
 
 或手動判斷:
 - ✅ **適合做市**:流動性低、spread 寬、距結算還久(>1 週)、PM 有相關信號可當公平價
@@ -212,7 +212,7 @@ LIMITLESS_EXECUTE=1 .venv/bin/python -m polymkt.cli limitless make-market \
 
 ### 已知限制(v0.6)
 
-- 單一市場時 capital 鎖死該市場(可用 [mm-loop](#polymkt-limitless-mm-loop--247-自動換市場) 解)
+- 單一市場時 capital 鎖死該市場(可用 [mm-loop](#mm-loop--247-自動換市場) 解)
 - 結算事件只看 expirationDate;若 LM 提前結算我們察覺不到
 - 主動 SELL 清倉是 maker(GTC + post-only),急著清要切 FAK
 - Toxicity 模型靠 fill 數據統計,新市場樣本不足時敏感度低
@@ -264,19 +264,19 @@ STACK_EXECUTE=1 .venv/bin/cdk deploy                   # 真實下單
 
 ## 三個主指令（分析/掃描）
 
-### 1. `polymkt limitless closest` — 看市場效率
+### 1. `limitless limitless closest` — 看市場效率
 
 ```bash
-.venv/bin/polymkt limitless closest --top 15
+.venv/bin/limitless closest --top 15
 ```
 
 列出 Limitless 上同市場 `ΣAsk(YES+NO)` 與互斥群組 `ΣYES` 最接近 $1 的市場。
 觀察：Limitless spread 普遍很寬（同市場 ΣAsk 可達 $1.98+），代表做市機會大。
 
-### 2. `polymkt limitless scan` — 找純 Limitless 套利
+### 2. `limitless limitless scan` — 找純 Limitless 套利
 
 ```bash
-.venv/bin/polymkt limitless scan --min-edge-bps 30 --probe-shares 100 --top 10
+.venv/bin/limitless scan --min-edge-bps 30 --probe-shares 100 --top 10
 ```
 
 掃描兩種真套利：
@@ -285,10 +285,10 @@ STACK_EXECUTE=1 .venv/bin/cdk deploy                   # 真實下單
 
 實測：通常 0 機會（市場有效率），這跟 Polymarket 一樣。
 
-### 3. `polymkt crossarb` — Polymarket↔Limitless 訊號交易
+### 3. `limitless crossarb` — Polymarket↔Limitless 訊號交易
 
 ```bash
-.venv/bin/polymkt crossarb \
+.venv/bin/limitless crossarb \
   --min-event-similarity 0.8 \
   --min-diff-pct 2.0 \
   --top 20
@@ -302,20 +302,20 @@ STACK_EXECUTE=1 .venv/bin/cdk deploy                   # 真實下單
 
 ## 三個下單指令
 
-### `polymkt limitless auth-derive --privy-token <token>`
+### `limitless limitless auth-derive --privy-token <token>`
 
 一次性：把 Privy token 換成 HMAC scoped token（寫入 `.env`）。
 
-### `polymkt limitless place-order ...`
+### `limitless limitless place-order ...`
 
 手動單筆下單。預設 dry-run，加 `--execute` 才真實送出。所有安全限額仍適用。
 
-### `polymkt crossarb-execute ...`
+### `limitless crossarb-execute ...`
 
 跨平台訊號交易。找 PM↔LM 價差 ≥ `--min-diff-pct` 的訊號 → 在 LM 下單。
 **已知限制**：訊號池小（4-6 個），多數對應 LM 流動性差的市場。
 
-### `polymkt limitless make-market --slug <slug>` (v0.6 做市)
+### `limitless limitless make-market --slug <slug>` (v0.6 做市)
 
 **雙 BID 做市**:在指定市場同時掛 BUY YES + BUY NO,總和 < $1,等對手吃單。
 - 雙邊都成交:保證 $1 payout,賺差額
@@ -325,10 +325,10 @@ STACK_EXECUTE=1 .venv/bin/cdk deploy                   # 真實下單
 - **v0.5b**:可選 `--oracle pm/blend` 用 Polymarket 鏡像當公平價,`--inventory-skew-pct` 庫存偏一邊時拉走報價
 - 詳見[做市運作說明](#做市-v06)章節
 
-### `polymkt limitless mm-rank` — 自動排序最適合做市的市場
+### `limitless limitless mm-rank` — 自動排序最適合做市的市場
 
 ```bash
-.venv/bin/python -m polymkt.cli limitless mm-rank \
+.venv/bin/python -m limitless.cli limitless mm-rank \
   --min-volume-usd 200 --min-days 3 --min-spread-bps 100 --top 10
 ```
 
@@ -347,20 +347,20 @@ score = spread_pp × (days_to_res / 7) × poly_arb_bonus × log(1 + volume/1000)
 
 挑 score 高、有 🪞(PM 鏡像)、沒 🛑(新聞風險)的市場直接餵給 `make-market`。
 
-### `polymkt limitless mm-loop` — 24/7 自動換市場
+### `limitless limitless mm-loop` — 24/7 自動換市場
 
 ```bash
 # 本機跑(預設 dry-run)
-.venv/bin/python -m polymkt.cli limitless mm-loop \
+.venv/bin/python -m limitless.cli limitless mm-loop \
   --total-capital 500 --max-positions 3 --capital-per-market 100 \
   --oracle pm
 
 # 真實下單
-LIMITLESS_EXECUTE=1 .venv/bin/python -m polymkt.cli limitless mm-loop \
+LIMITLESS_EXECUTE=1 .venv/bin/python -m limitless.cli limitless mm-loop \
   --total-capital 500 --max-positions 3 --execute
 
 # 從 env 讀全部(給容器 / Lambda 部署用)
-.venv/bin/python -m polymkt.cli limitless mm-loop --from-env
+.venv/bin/python -m limitless.cli limitless mm-loop --from-env
 ```
 
 行為:
@@ -372,7 +372,7 @@ LIMITLESS_EXECUTE=1 .venv/bin/python -m polymkt.cli limitless mm-loop \
 
 詳見[做市運作說明](#做市-v06)的所有 flag 也都套用到 mm-loop(用同名 env var)。
 
-### `polymkt whales list / watch / follow`
+### `limitless whales list / watch / follow`
 
 **鯨魚跟單系統**：追蹤 Polymarket 高 ROI 錢包、將其新動作鏡像到 Limitless。
 - `whales list` — 列出近期最有 alpha 的鯨魚（dollar-weighted ROI × log 量級）
@@ -385,8 +385,8 @@ LIMITLESS_EXECUTE=1 .venv/bin/python -m polymkt.cli limitless mm-loop \
 
 | 指令 | 用途 |
 |------|------|
-| `polymkt pm scan` | Polymarket 套利掃描(僅供觀察,台灣下不了單) |
-| `polymkt pm closest` | Polymarket 最接近套利的市場 |
+| `limitless pm scan` | Polymarket 套利掃描(僅供觀察,台灣下不了單) |
+| `limitless pm closest` | Polymarket 最接近套利的市場 |
 
 ## 實測結論（2026-05-20 跑 1000+ 市場）
 
@@ -410,7 +410,7 @@ Limitless `/markets/{slug}/orderbook` 只返回 YES 側。NO 側透過對稱推�
 - NO best ask = 1 - YES best bid
 - NO best bid = 1 - YES best ask
 
-詳見 [polymkt/limitless/models.py](polymkt/limitless/models.py) 的 `LimitlessOrderBook`。
+詳見 [limitless/models.py](limitless/models.py) 的 `LimitlessOrderBook`。
 
 ### Rate Limit 處理
 
@@ -423,7 +423,7 @@ Limitless API 對未認證請求的 rate limit 較嚴（會回 429）。Client �
 
 ```
 limitless/                                ← repo root
-├── polymkt/
+├── limitless/
 │   ├── __init__.py                       # 套件 docstring
 │   ├── crossarb.py                       # 跨平台 PM↔LM 價差訊號(連接兩邊)
 │   ├── cli.py                            # 統一 CLI 入口
@@ -450,7 +450,7 @@ limitless/                                ← repo root
 │
 ├── infra/                                # AWS CDK 基礎設施(Python)
 │   ├── app.py                            # CDK entry(STACK_TIER=serverless/free/managed)
-│   ├── polymkt_infra/
+│   ├── limitless_infra/
 │   │   ├── serverless_stack.py           # Lambda + DDB + EventBridge stack ⭐
 │   │   ├── free_tier_stack.py            # EC2 t3.micro + SSM stack
 │   │   └── stack.py                      # Fargate + Secrets Manager stack

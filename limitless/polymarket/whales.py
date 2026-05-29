@@ -147,7 +147,7 @@ class PolymarketDataClient:
         self._client = httpx.AsyncClient(
             base_url=DATA_API,
             timeout=timeout,
-            headers={"User-Agent": "polymkt/0.1", "Accept": "application/json"},
+            headers={"User-Agent": "limitless/0.1", "Accept": "application/json"},
         )
         self._sem = asyncio.Semaphore(max_concurrency)
 
@@ -365,7 +365,7 @@ async def attach_limitless_markets(
 
     # 延遲匯入避免循環
     from ..crossarb import _content_tokens, _strict_question_match
-    from ..limitless.client import LimitlessClient
+    from ..client import LimitlessClient
 
     async with LimitlessClient() as lm_c:
         lm_singles, lm_groups = await lm_c.fetch_active_markets(max_markets=1000)

@@ -28,7 +28,7 @@ class GammaClient:
         self._client = httpx.AsyncClient(
             base_url=host,
             timeout=timeout,
-            headers={"User-Agent": "polymkt-scanner/0.1"},
+            headers={"User-Agent": "limitless-scanner/0.1"},
         )
 
     async def close(self) -> None:
@@ -116,7 +116,7 @@ class ClobClient:
         self._client = httpx.AsyncClient(
             base_url=host,
             timeout=timeout,
-            headers={"User-Agent": "polymkt-scanner/0.1"},
+            headers={"User-Agent": "limitless-scanner/0.1"},
         )
         self._sem = asyncio.Semaphore(max_concurrency)
 

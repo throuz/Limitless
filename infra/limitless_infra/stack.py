@@ -40,7 +40,7 @@ from aws_cdk import (
 from constructs import Construct
 
 
-class PolymktMmLoopStack(Stack):
+class LimitlessMmLoopStack(Stack):
     def __init__(
         self,
         scope: Construct,
@@ -57,21 +57,21 @@ class PolymktMmLoopStack(Stack):
         token_id_secret = sm.Secret(
             self,
             "LimitlessApiTokenId",
-            secret_name="polymkt/limitless/api-token-id",
-            description="Limitless HMAC token id (從 polymkt limitless auth-derive 取得)",
+            secret_name="limitless/api-token-id",
+            description="Limitless HMAC token id (從 limitless auth-derive 取得)",
             removal_policy=RemovalPolicy.RETAIN,  # 別跟 stack 一起刪
         )
         api_secret = sm.Secret(
             self,
             "LimitlessApiSecret",
-            secret_name="polymkt/limitless/api-secret",
+            secret_name="limitless/api-secret",
             description="Limitless HMAC secret",
             removal_policy=RemovalPolicy.RETAIN,
         )
         private_key_secret = sm.Secret(
             self,
             "BasePrivateKey",
-            secret_name="polymkt/limitless/base-private-key",
+            secret_name="limitless/base-private-key",
             description="Base 鏈 EOA 私鑰(獨立 wallet,只放下單金額)",
             removal_policy=RemovalPolicy.RETAIN,
         )
@@ -80,7 +80,7 @@ class PolymktMmLoopStack(Stack):
         log_group = logs.LogGroup(
             self,
             "MmLoopLogs",
-            log_group_name="/polymkt/mm-loop",
+            log_group_name="/limitless/mm-loop",
             retention=logs.RetentionDays.ONE_MONTH,
             removal_policy=RemovalPolicy.DESTROY,
         )
@@ -103,7 +103,7 @@ class PolymktMmLoopStack(Stack):
             self,
             "MmLoopCluster",
             vpc=vpc,
-            cluster_name="polymkt-mm-loop",
+            cluster_name="limitless-mm-loop",
             container_insights=False,  # 開了會增加 CloudWatch 費用
         )
 
@@ -113,7 +113,7 @@ class PolymktMmLoopStack(Stack):
             "MmLoopTask",
             cpu=256,           # 0.25 vCPU
             memory_limit_mib=512,
-            family="polymkt-mm-loop",
+            family="limitless-mm-loop",
         )
 
         # 允許 task role 讀指定的三個 secret
@@ -147,7 +147,7 @@ class PolymktMmLoopStack(Stack):
                 "MM_LOOP_ORACLE": "pm",
                 "MM_LOOP_USE_MICROPRICE": "1",
                 "MM_LOOP_EMERGENCY_HOURS": "24",
-                # 容器內仍尊重 polymkt 內建的雙保險;改 1 才真實下單。
+                # 容器內仍尊重 限額內建的雙保險;改 1 才真實下單。
                 "LIMITLESS_EXECUTE": "1" if execute_real_orders else "0",
                 # SafetyLimits
                 "LIMITLESS_MAX_PER_ORDER": "30",      # 比預設 50 緊一點,容器內保守
@@ -169,7 +169,7 @@ class PolymktMmLoopStack(Stack):
             "MmLoopService",
             cluster=cluster,
             task_definition=task_def,
-            service_name="polymkt-mm-loop",
+            service_name="limitless-mm-loop",
             desired_count=1,
             assign_public_ip=True,   # default VPC 沒 NAT → 直接給 task public IP 出去
             min_healthy_percent=0,    # 單實例服務,允許 0% 再起一個

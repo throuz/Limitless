@@ -6,7 +6,7 @@
 - 用途:鯨魚追蹤(Polymarket data API 抓全平台交易 + 高 ROI 錢包)
 - 用途:Cross-arb 訊號(PM ↔ LM 價差,訊號交易而非套利)
 
-主要交易場在 [polymkt.limitless](../limitless)。這裡的所有 client/scanner/whales
+主要交易場在 [limitless](../limitless)。這裡的所有 client/scanner/whales
 都是**輔助工具**,不直接動 USDC。
 """
 

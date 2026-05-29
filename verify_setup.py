@@ -181,7 +181,7 @@ async def main():
     print(f"  wallet 地址:      {wallet_addr}")
     print()
     print("  如果上面全部 ✓ → bot 可以跑 dry-run 了:")
-    print("    .venv/bin/python -m polymkt.cli limitless mm-loop \\")
+    print("    .venv/bin/python -m limitless.cli limitless mm-loop \\")
     print("      --total-capital 80 --max-positions 3 --capital-per-market 25 \\")
     print("      --quote-size 5 --oracle pm")
     print()

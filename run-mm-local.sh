@@ -3,7 +3,7 @@
 #
 # 功能:
 #   - 自動重啟(若 bot crash)
-#   - 寫 log 到 ~/polymkt-mm.log,自動 rotate(留最近 7 天)
+#   - 寫 log 到 ~/limitless-mm.log,自動 rotate(留最近 7 天)
 #   - 接 SIGINT/SIGTERM,完整 propagate 給 mm-loop(讓它 graceful shutdown)
 #
 # 用法:
@@ -24,7 +24,7 @@ if [ "${1:-}" = "--execute" ]; then
 fi
 
 PROJECT_DIR="/Users/mac/Projects/limitless"
-LOG_FILE="${HOME}/polymkt-mm.log"
+LOG_FILE="${HOME}/limitless-mm.log"
 MAX_LOG_SIZE_MB=50
 MAX_LOG_FILES=7
 
@@ -67,7 +67,7 @@ while true; do
 
     echo "[wrapper] $(date -Iseconds) 啟動 mm-loop (restart #${RESTART_COUNT})" | tee -a "$LOG_FILE"
 
-    LIMITLESS_EXECUTE="$EXEC_ENV" caffeinate -i .venv/bin/python -m polymkt.cli limitless mm-loop \
+    LIMITLESS_EXECUTE="$EXEC_ENV" caffeinate -i .venv/bin/python -m limitless.cli limitless mm-loop \
         --total-capital 80 \
         --max-positions 3 \
         --capital-per-market 25 \

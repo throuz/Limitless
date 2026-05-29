@@ -23,8 +23,8 @@ from dataclasses import dataclass
 from difflib import SequenceMatcher
 
 from .polymarket.clients import GammaClient
-from .limitless.client import LimitlessClient
-from .limitless.models import LimitlessMarket, LimitlessGroup
+from .client import LimitlessClient
+from .models import LimitlessMarket, LimitlessGroup
 from .polymarket.models import Event as PMEvent, Market as PMMarket
 
 

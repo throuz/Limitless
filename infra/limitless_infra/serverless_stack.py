@@ -53,7 +53,7 @@ def _secure_param(scope: Stack, id_: str, *, name: str, description: str) -> ssm
     )
 
 
-class PolymktMmLoopServerlessStack(Stack):
+class LimitlessMmLoopServerlessStack(Stack):
     def __init__(
         self,
         scope: Construct,
@@ -70,24 +70,24 @@ class PolymktMmLoopServerlessStack(Stack):
         # ---------- 1. SSM SecureString secrets ----------
         token_id = _secure_param(
             self, "LimitlessApiTokenIdParam",
-            name="/polymkt/limitless/api-token-id",
+            name="/limitless/api-token-id",
             description="Limitless HMAC token id",
         )
         api_secret = _secure_param(
             self, "LimitlessApiSecretParam",
-            name="/polymkt/limitless/api-secret",
+            name="/limitless/api-secret",
             description="Limitless HMAC secret",
         )
         priv_key = _secure_param(
             self, "BasePrivateKeyParam",
-            name="/polymkt/limitless/base-private-key",
+            name="/limitless/base-private-key",
             description="Base 鏈 EOA 私鑰",
         )
 
         # ---------- 2. DynamoDB(on-demand,單表)----------
         state_table = ddb.Table(
             self, "MmStateTable",
-            table_name="polymkt-mm-state",
+            table_name="limitless-mm-state",
             partition_key=ddb.Attribute(name="pk", type=ddb.AttributeType.STRING),
             billing_mode=ddb.BillingMode.PAY_PER_REQUEST,   # on-demand,免管 capacity
             removal_policy=RemovalPolicy.DESTROY,           # 練手用;真要保留改 RETAIN
@@ -145,7 +145,7 @@ class PolymktMmLoopServerlessStack(Stack):
 
         iterate_fn = lambda_.DockerImageFunction(
             self, "IterateFunction",
-            function_name="polymkt-mm-iterate",
+            function_name="limitless-mm-iterate",
             code=lambda_.DockerImageCode.from_ecr(
                 repository=image_asset.repository,
                 tag_or_digest=image_asset.image_tag,
@@ -161,7 +161,7 @@ class PolymktMmLoopServerlessStack(Stack):
 
         rerank_fn = lambda_.DockerImageFunction(
             self, "RerankFunction",
-            function_name="polymkt-mm-rerank",
+            function_name="limitless-mm-rerank",
             code=lambda_.DockerImageCode.from_ecr(
                 repository=image_asset.repository,
                 tag_or_digest=image_asset.image_tag,
@@ -198,7 +198,7 @@ class PolymktMmLoopServerlessStack(Stack):
         # ---------- 5. EventBridge Rules ----------
         iterate_rule = events.Rule(
             self, "IterateSchedule",
-            rule_name="polymkt-mm-iterate",
+            rule_name="limitless-mm-iterate",
             schedule=events.Schedule.rate(Duration.seconds(iteration_seconds)),
             description=f"每 {iteration_seconds}s 觸發 iterate Lambda",
         )
@@ -208,7 +208,7 @@ class PolymktMmLoopServerlessStack(Stack):
 
         rerank_rule = events.Rule(
             self, "RerankSchedule",
-            rule_name="polymkt-mm-rerank",
+            rule_name="limitless-mm-rerank",
             schedule=events.Schedule.rate(Duration.minutes(rerank_minutes)),
             description=f"每 {rerank_minutes} 分鐘觸發 rerank Lambda",
         )
@@ -240,7 +240,7 @@ class PolymktMmLoopServerlessStack(Stack):
             )
 
         if alarm_email:
-            topic = sns.Topic(self, "AlarmTopic", topic_name="polymkt-mm-alarm")
+            topic = sns.Topic(self, "AlarmTopic", topic_name="limitless-mm-alarm")
             topic.add_subscription(sns_subs.EmailSubscription(alarm_email))
             CfnOutput(self, "AlarmTopicArn", value=topic.topic_arn)
 

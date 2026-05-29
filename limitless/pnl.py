@@ -3,14 +3,14 @@
 把 mm-loop / make-market 跑過程的狀態快照到 SQLite,提供「我到底有沒有賺錢」的答案。
 
 設計:
-- SQLite 單檔(~/.polymkt/pnl.db),零依賴、本機跑
+- SQLite 單檔(~/.limitless/pnl.db),零依賴、本機跑
 - 每輪 iterate() 記一筆 snapshot(庫存、quote、capital)
 - 每筆 order placement 記 attempt(成/敗/拒絕)
 - 從庫存 delta 推算 fills(LM 沒主動回 fill webhook)
 - 每日 USDC + CTF 估值 snapshot,算累計 PnL
 
 存取:
-    from polymkt.limitless import pnl
+    from limitless import pnl
     pnl.record_iteration(slug=..., yes_bid=..., ...)
     pnl.record_order(slug=..., side=..., ...)
     stats = pnl.summary_stats(days=30)
@@ -29,8 +29,8 @@ from typing import Any, Iterator
 
 
 DB_PATH = Path(
-    os.environ.get("POLYMKT_PNL_DB")
-    or str(Path.home() / ".polymkt" / "pnl.db")
+    os.environ.get("LIMITLESS_MM_PNL_DB")
+    or str(Path.home() / ".limitless" / "pnl.db")
 )
 
 

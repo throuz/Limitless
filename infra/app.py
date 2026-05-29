@@ -25,9 +25,9 @@ from __future__ import annotations
 import os
 import aws_cdk as cdk
 
-from polymkt_infra.stack import PolymktMmLoopStack
-from polymkt_infra.free_tier_stack import PolymktMmLoopFreeStack
-from polymkt_infra.serverless_stack import PolymktMmLoopServerlessStack
+from limitless_infra.stack import LimitlessMmLoopStack
+from limitless_infra.free_tier_stack import LimitlessMmLoopFreeStack
+from limitless_infra.serverless_stack import LimitlessMmLoopServerlessStack
 
 
 app = cdk.App()
@@ -44,20 +44,20 @@ alarm_email = os.environ.get("ALARM_EMAIL") or None
 env = cdk.Environment(account=account, region=region)
 
 if tier == "managed":
-    PolymktMmLoopStack(
-        app, "PolymktMmLoopStack",
+    LimitlessMmLoopStack(
+        app, "LimitlessMmLoopStack",
         env=env,
         execute_real_orders=execute_real,
     )
 elif tier in ("free", "free-tier", "ec2"):
-    PolymktMmLoopFreeStack(
-        app, "PolymktMmLoopFreeStack",
+    LimitlessMmLoopFreeStack(
+        app, "LimitlessMmLoopFreeStack",
         env=env,
         execute_real_orders=execute_real,
     )
 elif tier in ("serverless", "lambda"):
-    PolymktMmLoopServerlessStack(
-        app, "PolymktMmLoopServerlessStack",
+    LimitlessMmLoopServerlessStack(
+        app, "LimitlessMmLoopServerlessStack",
         env=env,
         execute_real_orders=execute_real,
         iteration_seconds=int(os.environ.get("ITERATION_SECONDS", "120")),
