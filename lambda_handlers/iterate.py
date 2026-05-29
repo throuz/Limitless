@@ -176,6 +176,7 @@ async def _iterate_one_market(slug: str, table, tc, lm, cfg: ServerlessCfg, g, r
         oracle_mode=cfg.oracle_mode,
         use_microprice=cfg.use_microprice,
         emergency_close_hours=cfg.emergency_close_hours,
+        winddown_mode=winddown_mode,
     )
 
     mm = MarketMaker(mc, tc, lm)

@@ -70,6 +70,9 @@ class MakerConfig:
     emergency_close_hours: float = 24.0     # 距結算 < N 小時 → 強制清倉退場
     emergency_close_enabled: bool = True    # 關掉這個會跑到結算（高風險）
 
+    # v0.6:winddown 模式(資本耗盡 + 有部位時,持續 SELL 直到清光)
+    winddown_mode: bool = False
+
     @classmethod
     def from_env(cls, slug: str) -> "MakerConfig":
         return cls(
@@ -427,7 +430,8 @@ class MarketMaker:
         - 庫存 NO  超過 max × unwind_inventory_pct → 掛 SELL NO  @ no_mid  + premium
         """
         # 資本耗盡時 threshold = 0(任何庫存都清倉,避免 orphan 部位)
-        if self._capital_used >= self.cfg.capital_usdc:
+        # 用 winddown_mode flag 而非 capital 比較,以免 SELL fill 後 capital 降低就放棄清倉
+        if getattr(self.cfg, "winddown_mode", False) or self._capital_used >= self.cfg.capital_usdc:
             threshold = 0.0
         else:
             threshold = self.cfg.max_inventory_shares * self.cfg.unwind_inventory_pct
@@ -585,18 +589,52 @@ class MarketMaker:
             notes.append(f"庫存：YES={inv.yes_shares:.1f}, NO={inv.no_shares:.1f}")
             yes_delta = inv.yes_shares - self._tox.last_yes_inv
             no_delta = inv.no_shares - self._tox.last_no_inv
+
+            # BUY fill(庫存增加)
             if yes_delta > 0.01:
-                notes.append(f"  📊 YES fill +{yes_delta:.1f} 股")
+                notes.append(f"  📊 BUY YES fill +{yes_delta:.1f} 股 @ ~${yes_mid:.3f}")
                 try:
                     notify.fill_detected(self.cfg.slug, "YES", yes_delta, yes_mid)
                 except Exception:
                     pass
             if no_delta > 0.01:
-                notes.append(f"  📊 NO fill +{no_delta:.1f} 股")
+                notes.append(f"  📊 BUY NO fill +{no_delta:.1f} 股 @ ~${no_mid:.3f}")
                 try:
                     notify.fill_detected(self.cfg.slug, "NO", no_delta, no_mid)
                 except Exception:
                     pass
+
+            # SELL fill(庫存減少 — 同樣值得通知)
+            # 並且要把 cap_used 減回,因為 USDC 回到 wallet
+            if yes_delta < -0.01:
+                sold = -yes_delta
+                proceeds = sold * yes_mid
+                notes.append(f"  💰 SELL YES fill -{sold:.1f} 股 @ ~${yes_mid:.3f},收 ~${proceeds:.2f}")
+                self._capital_used = max(0.0, self._capital_used - proceeds)
+                try:
+                    notify.send(
+                        f"💰 <b>SELL YES 成交</b>\n"
+                        f"市場:<code>{self.cfg.slug[:50]}</code>\n"
+                        f"賣出:{sold:.1f} 股 @ ~${yes_mid:.3f}\n"
+                        f"收回:${proceeds:.2f}"
+                    )
+                except Exception:
+                    pass
+            if no_delta < -0.01:
+                sold = -no_delta
+                proceeds = sold * no_mid
+                notes.append(f"  💰 SELL NO fill -{sold:.1f} 股 @ ~${no_mid:.3f},收 ~${proceeds:.2f}")
+                self._capital_used = max(0.0, self._capital_used - proceeds)
+                try:
+                    notify.send(
+                        f"💰 <b>SELL NO 成交</b>\n"
+                        f"市場:<code>{self.cfg.slug[:50]}</code>\n"
+                        f"賣出:{sold:.1f} 股 @ ~${no_mid:.3f}\n"
+                        f"收回:${proceeds:.2f}"
+                    )
+                except Exception:
+                    pass
+
             self._record_fill(inv)
         else:
             self._record_fill(None)
