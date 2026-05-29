@@ -67,14 +67,17 @@ while true; do
 
     echo "[wrapper] $(date -Iseconds) 啟動 mm-loop (restart #${RESTART_COUNT})" | tee -a "$LOG_FILE"
 
-    LIMITLESS_EXECUTE="$EXEC_ENV" caffeinate -i .venv/bin/python -m limitless.cli limitless mm-loop \
+    LIMITLESS_EXECUTE="$EXEC_ENV" caffeinate -i .venv/bin/python -m limitless.cli mm-loop \
         --total-capital 80 \
-        --max-positions 3 \
-        --capital-per-market 25 \
+        --max-positions 1 \
+        --capital-per-market 60 \
         --quote-size 5 \
         --oracle pm \
         --rank-refresh-s 1800 \
         --iter-sleep-s 60 \
+        --rank-min-volume 100 \
+        --rank-min-days 2.5 \
+        --rank-min-spread-bps 80 \
         $EXECUTE_FLAG \
         2>&1 | tee -a "$LOG_FILE" &
     PID=$!
