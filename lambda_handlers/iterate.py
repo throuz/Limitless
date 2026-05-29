@@ -30,7 +30,7 @@ from limitless.serverless import (
     get_table,
     load_active,
     save_active,
-    load_global,
+    load_global_consistent as load_global,   # iterate 用 consistent read,確保看到 rerank 寫的 dynamic_total_cap
     save_global,
     load_market,
     save_market,
@@ -149,6 +149,14 @@ async def _iterate_one_market(slug: str, table, tc, lm, cfg: ServerlessCfg, g, r
     effective_per_market = effective_total / max(cfg.max_positions, 1)
     per_market_remaining = max(0.0, effective_per_market - state.capital_used)
     cap_this_market = min(per_market_remaining, remaining_global)
+
+    # 動態股數:max_inventory 與 quote_size 跟著 per_market_cap 走,避免
+    # 「股數寫死,share 便宜時 cap 還沒花完就撞 inventory 牆」的浪費。
+    # 假設 worst-case share 平均價 $0.30,留 1.2× buffer。
+    ASSUMED_SHARE_PRICE = 0.30
+    INV_BUFFER = 1.2
+    dyn_max_inventory = max(10.0, (effective_per_market / ASSUMED_SHARE_PRICE) * INV_BUFFER)
+    dyn_quote_size = max(5.0, dyn_max_inventory / 5)   # 每次掛上限的 1/5,給 5 次成交空間
     # winddown 改基於 state.exhausted 旗標(持久),只要還有倉位就維持 SELL only
     # 不再依 cap_this_market 比較(SELL fill 會降 cap,但 winddown 應持續到清光)
     winddown_mode = bool(state.exhausted) and inv_hint > 0.01
@@ -181,10 +189,10 @@ async def _iterate_one_market(slug: str, table, tc, lm, cfg: ServerlessCfg, g, r
     mc = MakerConfig(
         slug=slug,
         capital_usdc=cap_this_market + state.capital_used,  # 因為 MM._capital_used 從 state 載入
-        quote_size_shares=cfg.quote_size_shares,
+        quote_size_shares=dyn_quote_size,
         target_profit_pct=cfg.target_profit_pct,
         half_spread_offset_pct=cfg.half_spread_pct,
-        max_inventory_shares=cfg.max_inventory_shares,
+        max_inventory_shares=dyn_max_inventory,
         iteration_sleep_s=cfg.iteration_sleep_s,
         duration_s=0,                                       # 我們自己管時間
         oracle_mode=cfg.oracle_mode,
@@ -244,6 +252,30 @@ async def _iterate_one_market(slug: str, table, tc, lm, cfg: ServerlessCfg, g, r
 
     # 全域累計
     g.total_capital_used += capital_delta
+
+    # 成交活動偵測(BUY → cap +; SELL → cap -;任何 |delta|>0 都算有單成交)
+    if abs(capital_delta) > 0.01:
+        g.last_fill_at = int(time.time())
+
+    # Allowance / 訂單拒絕偵測(rate-limit 6h)
+    now = int(time.time())
+    for note in (result.notes or []):
+        if "REJ:" not in note:
+            continue
+        low = note.lower()
+        if "allowance" in low or "insufficient" in low or "balance" in low:
+            if now - g.last_allowance_alert_at > 6 * 3600:
+                try:
+                    notify.send(
+                        f"🚨 <b>訂單被拒</b>(可能需要重新 approve)\n"
+                        f"市場:<code>{slug[:60]}</code>\n"
+                        f"原因:<code>{note[:200]}</code>\n"
+                        f"處理:本機跑 <code>approve_limitless.py</code> 重新授權"
+                    )
+                except Exception:
+                    pass
+                g.last_allowance_alert_at = now
+            break
 
     save_market(table, state)
 

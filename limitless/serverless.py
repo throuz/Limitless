@@ -87,6 +87,9 @@ class GlobalState:
     sessions_emergency: int = 0
     dynamic_total_cap: float = 0.0       # 鏈上 USDC × safety_buffer,rerank 更新
     dynamic_cap_updated_at: int = 0      # 最後一次更新時間戳
+    last_fill_at: int = 0                # 最後一次偵測到成交的時間戳(watchdog 用)
+    last_no_fill_alert_at: int = 0       # 最後一次發「24h 無成交」警報
+    last_allowance_alert_at: int = 0     # 最後一次發「allowance 不足」警報
 
 
 @dataclass
@@ -137,11 +140,33 @@ def load_global(table) -> GlobalState:
         sessions_emergency=int(r.get("sessions_emergency", 0)),
         dynamic_total_cap=float(r.get("dynamic_total_cap", 0.0)),
         dynamic_cap_updated_at=int(r.get("dynamic_cap_updated_at", 0)),
+        last_fill_at=int(r.get("last_fill_at", 0)),
+        last_no_fill_alert_at=int(r.get("last_no_fill_alert_at", 0)),
+        last_allowance_alert_at=int(r.get("last_allowance_alert_at", 0)),
     )
 
 
 def save_global(table, g: GlobalState) -> None:
     table.put_item(Item=_to_decimal({"pk": "global", **asdict(g)}))
+
+
+def load_global_consistent(table) -> GlobalState:
+    """Strongly consistent read,iterate 用以避免讀到 stale dynamic_total_cap。"""
+    r = table.get_item(Key={"pk": "global"}, ConsistentRead=True).get("Item")
+    if not r:
+        return GlobalState()
+    r = _from_decimal(r)
+    return GlobalState(
+        total_capital_used=r.get("total_capital_used", 0.0),
+        last_rerank_at=int(r.get("last_rerank_at", 0)),
+        sessions_completed=int(r.get("sessions_completed", 0)),
+        sessions_emergency=int(r.get("sessions_emergency", 0)),
+        dynamic_total_cap=float(r.get("dynamic_total_cap", 0.0)),
+        dynamic_cap_updated_at=int(r.get("dynamic_cap_updated_at", 0)),
+        last_fill_at=int(r.get("last_fill_at", 0)),
+        last_no_fill_alert_at=int(r.get("last_no_fill_alert_at", 0)),
+        last_allowance_alert_at=int(r.get("last_allowance_alert_at", 0)),
+    )
 
 
 def load_active(table) -> ActiveList:

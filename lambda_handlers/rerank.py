@@ -110,6 +110,27 @@ async def _run(event: dict, context) -> dict:
     except Exception as e:
         log("rerank_dynamic_cap_error", error=str(e))
 
+    # 無成交 watchdog:活躍 24h 沒任何成交 → 提示
+    # (last_fill_at == 0 表示從未成交過,先 seed 為現在,給 24h 觀察期)
+    now = int(time.time())
+    if active.slugs and g.last_fill_at == 0:
+        g.last_fill_at = now    # 首次有市場在跑 → 開始計算 watchdog
+        save_global(table, g)
+    elif active.slugs and g.last_fill_at > 0 and now - g.last_fill_at > 24 * 3600:
+        if now - g.last_no_fill_alert_at > 24 * 3600:
+            try:
+                hrs = (now - g.last_fill_at) / 3600
+                notify.send(
+                    f"⚠️ <b>{hrs:.0f}h 無任何成交</b>\n"
+                    f"Active 市場:{len(active.slugs)} 個\n"
+                    f"可能原因:報價偏太遠 / 流動性差 / 訂單被拒\n"
+                    f"建議:檢查 AWS Logs 看是否有 REJ"
+                )
+                g.last_no_fill_alert_at = now
+                save_global(table, g)
+            except Exception:
+                pass
+
     removed_settled = []
     removed_exhausted = []
     capital_freed = 0.0   # 累計從移除市場「歸還」到 global cap 的額度
