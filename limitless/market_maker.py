@@ -49,6 +49,13 @@ class MakerConfig:
     # v0.5b：公平價來源
     oracle_mode: str = "lm"
     inventory_skew_pct: float = 0.5
+    # v0.7：庫存失衡時主動把「缺口側」bid 拉向 mid，提高缺口側成交率以平衡庫存。
+    # 0 = 關閉（維持舊行為：只降多數側 bid，不主動拉缺口側）。
+    inventory_rebalance_pct: float = 50.0
+    # 缺口側 bid 最多可「超過」mid 多少 pp（0 = 只拉到 mid，永不付高於公平價）。
+    inventory_rebalance_max_cross_pct: float = 0.0
+    # capital / inventory 上限觸發時，仍允許「缺口側」BUY 以完成配對（降方向風險）。
+    rebalance_when_capped: bool = True
 
     # v0.6：Microprice（依對手側 size 加權的公平價,更準）
     use_microprice: bool = True
@@ -102,6 +109,9 @@ class IterationResult:
     # v0.6：toxicity 與緊急狀態
     toxicity_score: float = 0.0
     emergency_close: bool = False
+    # v0.7：資本死區 — 資本撐滿、補不了任一腿、且部位失衡(非配對)。
+    # 上層(iterate handler)看到此旗標 → 把市場轉 winddown 主動清,而非乾等 emergency。
+    capital_deadlocked: bool = False
     notes: list[str] = field(default_factory=list)
 
 
@@ -419,8 +429,54 @@ class MarketMaker:
             raw_yes_bid -= excess / 2
             raw_no_bid -= excess / 2
 
+        # v0.7：庫存失衡 → 主動把「缺口側」bid 拉向 mid（甚至略過 mid），
+        # 提高缺口側成交率以平衡庫存。刻意放在 target_sum 正規化「之後」:
+        # 補腿目的是「完成配對(1 YES + 1 NO = 結算 $1)、降方向風險」,不是賺 spread,
+        # 因此允許和 > target_sum(最多付到 mid + max_cross)。
+        raw_yes_bid, raw_no_bid = self._apply_inventory_rebalance(
+            raw_yes_bid, raw_no_bid, yes_mid, no_mid, inventory
+        )
+
         yes_bid = max(0.01, min(0.99, round(raw_yes_bid, 3)))
         no_bid = max(0.01, min(0.99, round(raw_no_bid, 3)))
+        return yes_bid, no_bid
+
+    def _apply_inventory_rebalance(
+        self,
+        yes_bid: float,
+        no_bid: float,
+        yes_mid: float,
+        no_mid: float,
+        inventory: Inventory | None,
+    ) -> tuple[float, float]:
+        """庫存失衡時把「缺口側」bid 主動往 mid 拉,加快補腿成交。
+
+        持有過多 YES(net>0)→ 缺 NO → 把 NO bid 從 no_mid - offset 拉向 no_mid
+        (最多 no_mid + max_cross)。反之亦然。只「上拉」,絕不下壓。
+        max_cross 預設 0 → 永不付高於公平價,僅把缺口側補到 mid。
+        """
+        if inventory is None or self.cfg.inventory_rebalance_pct <= 0:
+            return yes_bid, no_bid
+        if self.cfg.max_inventory_shares <= 0:
+            return yes_bid, no_bid
+
+        net = inventory.yes_shares - inventory.no_shares
+        imbalance = abs(net) / self.cfg.max_inventory_shares
+        if imbalance < 0.1:        # 接近平衡,不動作
+            return yes_bid, no_bid
+
+        frac = min(1.0, imbalance) * (self.cfg.inventory_rebalance_pct / 100)
+        max_cross = self.cfg.inventory_rebalance_max_cross_pct / 100
+
+        if net > 0:                # 太多 YES → 補 NO
+            target = no_mid + max_cross
+            new_no = no_bid + (target - no_bid) * frac
+            no_bid = max(no_bid, min(target, new_no))
+        elif net < 0:              # 太多 NO → 補 YES
+            target = yes_mid + max_cross
+            new_yes = yes_bid + (target - yes_bid) * frac
+            yes_bid = max(yes_bid, min(target, new_yes))
+
         return yes_bid, no_bid
 
     def compute_unwind_prices(
@@ -582,6 +638,7 @@ class MarketMaker:
     async def iterate(self) -> IterationResult:
         notes: list[str] = []
         self._fills_this_iter = False  # 每輪重置;fill 偵測會設 True
+        capital_deadlocked = False     # 資本死區旗標(資本撐滿+補不了腿+部位失衡)
 
         # 0. 結算偵測（最優先）
         if self.is_emergency_window():
@@ -694,22 +751,65 @@ class MarketMaker:
         elif tox.score > 0:
             notes.append(f"toxicity={tox.score:.2f}")
 
-        # 4. 庫存上限：BUY 那邊不下，但 SELL 仍可掛
-        skip_buys = False
+        # 4. 逐側 BUY 開關(庫存上限 / 資本上限 → 可能只關單側,而非一刀全關)
+        allow_yes_buy = True
+        allow_no_buy = True
+
+        # 4a. 庫存上限:已持有過多的「那一側」停止加碼,但「對側(補腿)」仍可下,
+        #     讓失衡部位有機會被反向腿配對掉(降方向風險),而非整個凍結。
         if inv is not None and inv.max_side >= self.cfg.max_inventory_shares:
-            notes.append(f"⚠️ 庫存達上限 {self.cfg.max_inventory_shares}，本輪不下 BUY（仍嘗試 SELL 清倉）")
-            skip_buys = True
+            if inv.yes_shares >= inv.no_shares:
+                allow_yes_buy = False
+            else:
+                allow_no_buy = False
+            notes.append(
+                f"⚠️ 庫存達上限 {self.cfg.max_inventory_shares:.0f}"
+                f"(YES={inv.yes_shares:.1f} NO={inv.no_shares:.1f}),"
+                f"停加碼 {'YES' if not allow_yes_buy else 'NO'} 側(仍可補對側+SELL)"
+            )
 
         # 5. 算目標 BUY 價
         yes_bid, no_bid = self.compute_target_prices(yes_mid, no_mid, inv, tox)
         notes.append(f"BUY YES @${yes_bid:.3f} + BUY NO @${no_bid:.3f}, 和=${yes_bid + no_bid:.3f}")
 
-        # 6. 資本檢查
-        notional_buys = (yes_bid + no_bid) * self.cfg.quote_size_shares
-        capital_ok = (self._capital_used + notional_buys) <= self.cfg.capital_usdc
-        if not capital_ok:
-            notes.append(f"⚠️ 累計資本 ${self._capital_used:.2f} + 本輪 ${notional_buys:.2f} > ${self.cfg.capital_usdc}，跳過 BUY")
-            skip_buys = True
+        # 6. 資本檢查(net-aware)
+        #    _capital_used 是 fill-based(真實 USDC);GTC post_only 掛單本身不鎖款。
+        #    資本撐滿時預設兩側全停;但若 rebalance_when_capped 且目前持倉失衡,
+        #    仍允許「缺口側」單腿 BUY — 完成配對(1 YES + 1 NO = 結算 $1)是
+        #    降風險、結算自償的動作,不該被資本上限一刀切死(否則市場永久凍結抱單)。
+        #    winddown(市場已放棄)不走這條,改由 SELL 清倉。
+        notional_both = (yes_bid + no_bid) * self.cfg.quote_size_shares
+        if (self._capital_used + notional_both) > self.cfg.capital_usdc:
+            net = (inv.yes_shares - inv.no_shares) if inv is not None else 0.0
+            deficit_side = "no" if net > 1e-6 else ("yes" if net < -1e-6 else None)
+            allowed_one = False
+            if (self.cfg.rebalance_when_capped and not self.cfg.winddown_mode
+                    and deficit_side is not None):
+                leg_price = no_bid if deficit_side == "no" else yes_bid
+                single_leg = leg_price * self.cfg.quote_size_shares
+                if (self._capital_used + single_leg) <= self.cfg.capital_usdc:
+                    if deficit_side == "no":
+                        allow_yes_buy = False
+                    else:
+                        allow_no_buy = False
+                    allowed_one = True
+                    notes.append(
+                        f"⚠️ 資本 ${self._capital_used:.2f}+雙腿 ${notional_both:.2f}"
+                        f">${self.cfg.capital_usdc:.2f} → 改只補 {deficit_side.upper()} 腿(完成配對降風險)"
+                    )
+            if not allowed_one:
+                allow_yes_buy = False
+                allow_no_buy = False
+                notes.append(
+                    f"⚠️ 累計資本 ${self._capital_used:.2f} + 本輪 ${notional_both:.2f}"
+                    f" > ${self.cfg.capital_usdc:.2f},跳過 BUY"
+                )
+                # 死區:資本撐滿、補不了任一腿、且部位「失衡」(非配對)→ 通知上層轉 winddown。
+                # 配對部位(net≈0)不算死區:留到結算每組換 $1 即獲利,不該 fire-sale。
+                if (not self.cfg.winddown_mode and inv is not None
+                        and abs(inv.yes_shares - inv.no_shares) > 0.01):
+                    capital_deadlocked = True
+                    notes.append("  🪤 資本死區(撐滿+失衡)→ 建議轉 winddown 主動清倉")
 
         # 7a. 決定是否真的要撤舊掛新(沒事就 no-op,保留 maker queue position)
         should_rq, rq_reason = self._should_requote(yes_bid, no_bid, tox)
@@ -728,6 +828,7 @@ class MarketMaker:
                 yes_sell_accepted=bool(self._last_quoted_yes_sell > 0),
                 no_sell_accepted=bool(self._last_quoted_no_sell > 0),
                 toxicity_score=tox.score,
+                capital_deadlocked=capital_deadlocked,
                 notes=notes,
             )
 
@@ -738,43 +839,38 @@ class MarketMaker:
         yes_bid_accepted = False
         no_bid_accepted = False
 
-        # 8. 掛 BUY 單（套 toxicity pull）
-        if not skip_buys:
-            if not tox.pull_yes:
-                yes_req = OrderRequest(
-                    market_slug=self.cfg.slug, token_id=self.yes_token,
-                    side="BUY", price=yes_bid, size_shares=self.cfg.quote_size_shares,
-                    order_type="GTC", post_only=True,
-                )
-                yes_res = await self.tc.place_order(yes_req)
-                yes_bid_accepted = yes_res.accepted
-                notes.append(f"  YES BUY {'OK' if yes_res.accepted else 'REJ:' + (yes_res.error or '?')} ({'dry' if yes_res.dry_run else 'live'})")
-            else:
-                notes.append("  YES BUY 撤（toxicity）")
+        # 8. 掛 BUY 單(逐側開關 allow_*_buy + toxicity pull)
+        # NOTE: cap_used 不在這裡 += notional。GTC post_only 訂單只是「掛在 book 上」,
+        # USDC 沒真實流出。真實扣款只在「對手吃單,我們真的拿到 share」時發生
+        # → 已在前面 BUY fill 偵測加上。
+        if allow_yes_buy and not tox.pull_yes:
+            yes_req = OrderRequest(
+                market_slug=self.cfg.slug, token_id=self.yes_token,
+                side="BUY", price=yes_bid, size_shares=self.cfg.quote_size_shares,
+                order_type="GTC", post_only=True,
+            )
+            yes_res = await self.tc.place_order(yes_req)
+            yes_bid_accepted = yes_res.accepted
+            notes.append(f"  YES BUY {'OK' if yes_res.accepted else 'REJ:' + (yes_res.error or '?')} ({'dry' if yes_res.dry_run else 'live'})")
+        elif tox.pull_yes:
+            notes.append("  YES BUY 撤（toxicity）")
 
-            if not tox.pull_no:
-                no_req = OrderRequest(
-                    market_slug=self.cfg.slug, token_id=self.no_token,
-                    side="BUY", price=no_bid, size_shares=self.cfg.quote_size_shares,
-                    order_type="GTC", post_only=True,
-                )
-                no_res = await self.tc.place_order(no_req)
-                no_bid_accepted = no_res.accepted
-                notes.append(f"  NO  BUY {'OK' if no_res.accepted else 'REJ:' + (no_res.error or '?')} ({'dry' if no_res.dry_run else 'live'})")
-            else:
-                notes.append("  NO  BUY 撤（toxicity）")
+        if allow_no_buy and not tox.pull_no:
+            no_req = OrderRequest(
+                market_slug=self.cfg.slug, token_id=self.no_token,
+                side="BUY", price=no_bid, size_shares=self.cfg.quote_size_shares,
+                order_type="GTC", post_only=True,
+            )
+            no_res = await self.tc.place_order(no_req)
+            no_bid_accepted = no_res.accepted
+            notes.append(f"  NO  BUY {'OK' if no_res.accepted else 'REJ:' + (no_res.error or '?')} ({'dry' if no_res.dry_run else 'live'})")
+        elif tox.pull_no:
+            notes.append("  NO  BUY 撤（toxicity）")
 
-            # NOTE: cap_used 不在這裡 += notional_buys。
-            # GTC post_only 訂單只是「掛在 book 上」,USDC 沒真實流出。
-            # 真實扣款只發生在「對手吃單,我們真的拿到 share」時 → 已在 BUY fill 偵測加上(line 605-619)。
-
-            # 記錄「實際掛上書的價」,供下輪 _should_requote 比對
-            self._last_quoted_yes_bid = yes_bid if yes_bid_accepted else 0.0
-            self._last_quoted_no_bid = no_bid if no_bid_accepted else 0.0
-        else:
-            # skip_buys = True 時,沒掛 BUY,清掉 last_quoted(下輪會 force requote)
-            self._last_quoted_yes_bid = 0.0
-            self._last_quoted_no_bid = 0.0
+        # 記錄「實際掛上書的價」,供下輪 _should_requote 比對。
+        # 沒掛上的側 = 0.0 → 下輪 first_quote 強制重掛。
+        self._last_quoted_yes_bid = yes_bid if yes_bid_accepted else 0.0
+        self._last_quoted_no_bid = no_bid if no_bid_accepted else 0.0
 
         # 9. 主動 SELL 清庫存
         # 先清 last_quoted_sell,後續成功 place 才會填回(對應 cancel_all 已撤所有 SELL 的事實)
@@ -782,37 +878,67 @@ class MarketMaker:
         self._last_quoted_no_sell = 0.0
         yes_sell_price = no_sell_price = 0.0
         yes_sell_accepted = no_sell_accepted = False
-        if inv is not None:
-            yes_sell, no_sell = self.compute_unwind_prices(yes_mid, no_mid, inv)
+        if inv is not None and (inv.yes_shares > 0 or inv.no_shares > 0):
             unwind_size = self.cfg.unwind_size_shares or self.cfg.quote_size_shares
 
-            if yes_sell is not None and inv.yes_shares > 0:
-                size = min(unwind_size, inv.yes_shares)
-                req = OrderRequest(
-                    market_slug=self.cfg.slug, token_id=self.yes_token,
-                    side="SELL", price=yes_sell, size_shares=size,
-                    order_type="GTC", post_only=True,
-                )
-                res = await self.tc.place_order(req)
-                yes_sell_price = yes_sell
-                yes_sell_accepted = res.accepted
-                if res.accepted:
-                    self._last_quoted_yes_sell = yes_sell
-                notes.append(f"  SELL YES @${yes_sell:.3f} × {size:.1f} {'OK' if res.accepted else 'REJ:' + (res.error or '?')} (清庫存)")
+            if self.cfg.winddown_mode:
+                # v0.7:市場已放棄(資本耗盡 + 抱單)→ 貼對手 best bid 用 FAK 主動清掉。
+                # 不再用 mid+premium 的 GTC post_only:那種價在崩盤側永遠不會成交,
+                # 只會乾等到結算(若押錯邊就歸零)。每輪清 unwind_size,逐步出場降衝擊。
+                ob = await self.lm.fetch_orderbook(self.cfg.slug)
+                if ob is None:
+                    notes.append("  ⚠️ winddown 無 orderbook,本輪無法清倉")
+                else:
+                    if inv.yes_shares > 0 and ob.yes_best_bid:
+                        size = min(unwind_size, inv.yes_shares)
+                        px = max(0.01, min(0.99, round(ob.yes_best_bid.price - 0.001, 3)))
+                        res = await self.tc.place_order(OrderRequest(
+                            market_slug=self.cfg.slug, token_id=self.yes_token,
+                            side="SELL", price=px, size_shares=size, order_type="FAK",
+                        ))
+                        yes_sell_price = px
+                        yes_sell_accepted = res.accepted
+                        notes.append(f"  🏃 winddown SELL YES @${px:.3f} × {size:.1f} {'OK' if res.accepted else 'REJ:' + (res.error or '?')} (FAK 清倉)")
+                    if inv.no_shares > 0 and ob.no_best_bid:
+                        size = min(unwind_size, inv.no_shares)
+                        px = max(0.01, min(0.99, round(ob.no_best_bid.price - 0.001, 3)))
+                        res = await self.tc.place_order(OrderRequest(
+                            market_slug=self.cfg.slug, token_id=self.no_token,
+                            side="SELL", price=px, size_shares=size, order_type="FAK",
+                        ))
+                        no_sell_price = px
+                        no_sell_accepted = res.accepted
+                        notes.append(f"  🏃 winddown SELL NO @${px:.3f} × {size:.1f} {'OK' if res.accepted else 'REJ:' + (res.error or '?')} (FAK 清倉)")
+            else:
+                yes_sell, no_sell = self.compute_unwind_prices(yes_mid, no_mid, inv)
 
-            if no_sell is not None and inv.no_shares > 0:
-                size = min(unwind_size, inv.no_shares)
-                req = OrderRequest(
-                    market_slug=self.cfg.slug, token_id=self.no_token,
-                    side="SELL", price=no_sell, size_shares=size,
-                    order_type="GTC", post_only=True,
-                )
-                res = await self.tc.place_order(req)
-                no_sell_price = no_sell
-                no_sell_accepted = res.accepted
-                if res.accepted:
-                    self._last_quoted_no_sell = no_sell
-                notes.append(f"  SELL NO  @${no_sell:.3f} × {size:.1f} {'OK' if res.accepted else 'REJ:' + (res.error or '?')} (清庫存)")
+                if yes_sell is not None and inv.yes_shares > 0:
+                    size = min(unwind_size, inv.yes_shares)
+                    req = OrderRequest(
+                        market_slug=self.cfg.slug, token_id=self.yes_token,
+                        side="SELL", price=yes_sell, size_shares=size,
+                        order_type="GTC", post_only=True,
+                    )
+                    res = await self.tc.place_order(req)
+                    yes_sell_price = yes_sell
+                    yes_sell_accepted = res.accepted
+                    if res.accepted:
+                        self._last_quoted_yes_sell = yes_sell
+                    notes.append(f"  SELL YES @${yes_sell:.3f} × {size:.1f} {'OK' if res.accepted else 'REJ:' + (res.error or '?')} (清庫存)")
+
+                if no_sell is not None and inv.no_shares > 0:
+                    size = min(unwind_size, inv.no_shares)
+                    req = OrderRequest(
+                        market_slug=self.cfg.slug, token_id=self.no_token,
+                        side="SELL", price=no_sell, size_shares=size,
+                        order_type="GTC", post_only=True,
+                    )
+                    res = await self.tc.place_order(req)
+                    no_sell_price = no_sell
+                    no_sell_accepted = res.accepted
+                    if res.accepted:
+                        self._last_quoted_no_sell = no_sell
+                    notes.append(f"  SELL NO  @${no_sell:.3f} × {size:.1f} {'OK' if res.accepted else 'REJ:' + (res.error or '?')} (清庫存)")
 
         # 10. PnL 紀錄(v0.9)— 偵測 fills + 寫 iteration snapshot
         try:
@@ -841,7 +967,8 @@ class MarketMaker:
             yes_order_accepted=yes_bid_accepted, no_order_accepted=no_bid_accepted,
             yes_sell_price=yes_sell_price, no_sell_price=no_sell_price,
             yes_sell_accepted=yes_sell_accepted, no_sell_accepted=no_sell_accepted,
-            toxicity_score=tox.score, notes=notes,
+            toxicity_score=tox.score, capital_deadlocked=capital_deadlocked,
+            notes=notes,
         )
 
     async def run(self, on_iteration=None) -> dict:

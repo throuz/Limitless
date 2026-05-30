@@ -208,6 +208,9 @@ async def _iterate_one_market(slug: str, table, tc, lm, cfg: ServerlessCfg, g, r
         inventory_skew_pct=cfg.inventory_skew_pct,
         unwind_inventory_pct=cfg.unwind_inventory_pct,
         unwind_premium_pct=cfg.unwind_premium_pct,
+        inventory_rebalance_pct=cfg.inventory_rebalance_pct,
+        inventory_rebalance_max_cross_pct=cfg.inventory_rebalance_max_cross_pct,
+        rebalance_when_capped=cfg.rebalance_when_capped,
     )
 
     mm = MarketMaker(mc, tc, lm)
@@ -265,6 +268,15 @@ async def _iterate_one_market(slug: str, table, tc, lm, cfg: ServerlessCfg, g, r
     # 成交活動偵測(BUY → cap +; SELL → cap -;任何 |delta|>0 都算有單成交)
     if abs(capital_delta) > 0.01:
         g.last_fill_at = int(time.time())
+
+    # v0.7:資本死區 → 轉 winddown。
+    # iterate 回報「資本撐滿 + 補不了缺口側 + 部位失衡」時,標 exhausted,
+    # 下一輪 _iterate_one_market 開頭就會以 winddown_mode 進場,改用 FAK 主動清倉,
+    # 不必乾等 emergency_close(距結算<24h 才觸發)。配對部位(net≈0)不會被標。
+    if result.capital_deadlocked and not state.exhausted:
+        state.exhausted = True
+        log("market_capital_deadlock_to_winddown", slug=slug,
+            used=state.capital_used, cap=effective_per_market)
 
     # Allowance / 訂單拒絕偵測(rate-limit 6h)
     now = int(time.time())

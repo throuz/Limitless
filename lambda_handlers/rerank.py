@@ -239,6 +239,8 @@ async def _run(event: dict, context) -> dict:
         books = await lm.fetch_orderbooks(slugs_to_fetch)
 
         scored: list[tuple] = []
+        skipped_trendy = 0
+        skipped_thin = 0
         for m, days, risk in rated:
             if m.slug in active.slugs:
                 continue
@@ -252,13 +254,32 @@ async def _run(event: dict, context) -> dict:
             if spread_pp * 100 < cfg.rank_min_spread_bps:
                 continue
             mid = (yb.price + ya.price) / 2
-            if not (0.05 < mid < 0.95):
+            # v0.7:只做接近 0.5 的市場。一面倒的盤(mid 太低/太高)雙邊做市
+            # 必被逆選擇單向灌爛庫存(參考 Starbucks YES→0.027 的教訓),直接跳過。
+            if not (cfg.rank_min_mid < mid < cfg.rank_max_mid):
+                skipped_trendy += 1
+                continue
+            # v0.7:兩側都要有真實深度,否則「雙邊掛單」實際只有一邊會成交。
+            bid_depth = sum(l.shares for l in ob.yes_bids)
+            ask_depth = sum(l.shares for l in ob.yes_asks)
+            if min(bid_depth, ask_depth) < cfg.rank_min_depth_shares:
+                skipped_thin += 1
                 continue
             days_factor = min(days, 30) / 7
             pa_bonus = 1.3 if m.is_poly_arbitrage else 1.0
             vol_factor = 1 + math.log(1 + m.volume_usd / 1000)
-            score = spread_pp * days_factor * pa_bonus * vol_factor / (1 + risk)
+            # v0.7:獎勵「平衡 + 有深度」;spread 獎勵設上限,不再偏好流動性差的超寬盤。
+            balance = 1.0 - abs(mid - 0.5) * 2          # 1 = 正好 0.5,0 = 極端
+            depth_factor = 1 + math.log(1 + min(bid_depth, ask_depth))
+            spread_factor = min(spread_pp, cfg.rank_spread_cap_pp)
+            score = (spread_factor * (0.5 + balance) * depth_factor
+                     * days_factor * pa_bonus * vol_factor / (1 + risk))
             scored.append((score, m, m.end_date or ""))
+
+        if skipped_trendy or skipped_thin:
+            log("rerank_filtered", trendy=skipped_trendy, thin=skipped_thin,
+                mid_band=[cfg.rank_min_mid, cfg.rank_max_mid],
+                min_depth=cfg.rank_min_depth_shares)
 
         scored.sort(key=lambda r: -r[0])
         for score, m, exp in scored[:deficit]:

@@ -247,6 +247,11 @@ class ServerlessCfg:
     rank_min_days: float = 2.0
     rank_min_spread_bps: int = 100
     rank_max_news_risk: float = 2.0
+    # v0.7：選市場過濾趨勢盤 — 只做接近 0.5、雙邊都有真實深度的市場。
+    rank_min_mid: float = 0.30           # mid < 此值 = 一面倒的輸方,跳過
+    rank_max_mid: float = 0.70           # mid > 此值 = 一面倒的贏方,跳過
+    rank_min_depth_shares: float = 50.0  # 每側 orderbook 深度門檻(雙邊做市才有意義)
+    rank_spread_cap_pp: float = 10.0     # spread 獎勵上限(避免偏好流動性差的超寬盤)
     oracle_mode: str = "pm"
     use_microprice: bool = True
     emergency_close_hours: float = 24.0
@@ -260,6 +265,10 @@ class ServerlessCfg:
     inventory_skew_pct: float = 0.5
     unwind_inventory_pct: float = 0.6
     unwind_premium_pct: float = 1.0
+    # v0.7：庫存失衡時主動拉缺口側 bid 補腿(完成配對降風險)
+    inventory_rebalance_pct: float = 50.0
+    inventory_rebalance_max_cross_pct: float = 0.0
+    rebalance_when_capped: bool = True
     execute: bool = False
 
     @classmethod
@@ -281,6 +290,10 @@ class ServerlessCfg:
             rank_min_days=f("MM_LOOP_RANK_MIN_DAYS", 2),
             rank_min_spread_bps=i("MM_LOOP_RANK_MIN_SPREAD_BPS", 100),
             rank_max_news_risk=f("MM_LOOP_RANK_MAX_NEWS_RISK", 2),
+            rank_min_mid=f("MM_LOOP_RANK_MIN_MID", 0.30),
+            rank_max_mid=f("MM_LOOP_RANK_MAX_MID", 0.70),
+            rank_min_depth_shares=f("MM_LOOP_RANK_MIN_DEPTH_SHARES", 50),
+            rank_spread_cap_pp=f("MM_LOOP_RANK_SPREAD_CAP_PP", 10),
             oracle_mode=s("MM_LOOP_ORACLE", "pm"),
             use_microprice=os.environ.get("MM_LOOP_USE_MICROPRICE", "1") == "1",
             emergency_close_hours=f("MM_LOOP_EMERGENCY_HOURS", 24),
@@ -294,6 +307,9 @@ class ServerlessCfg:
             inventory_skew_pct=f("MM_LOOP_INVENTORY_SKEW_PCT", 0.5),
             unwind_inventory_pct=f("MM_LOOP_UNWIND_INVENTORY_PCT", 0.6),
             unwind_premium_pct=f("MM_LOOP_UNWIND_PREMIUM_PCT", 1.0),
+            inventory_rebalance_pct=f("MM_LOOP_INVENTORY_REBALANCE_PCT", 50),
+            inventory_rebalance_max_cross_pct=f("MM_LOOP_INVENTORY_REBALANCE_MAX_CROSS_PCT", 0),
+            rebalance_when_capped=os.environ.get("MM_LOOP_REBALANCE_WHEN_CAPPED", "1") == "1",
             execute=os.environ.get("LIMITLESS_EXECUTE", "0") == "1",
         )
 
