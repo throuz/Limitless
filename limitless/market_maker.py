@@ -686,14 +686,11 @@ class MarketMaker:
             self._record_fill(None)
 
         # 3. Toxicity 評估
+        # bot 內部自動加寬/撤單處理,不發 Telegram(收到也不用人介入)。
+        # 仍寫進 notes,看 log 可追。
         tox = self.assess_toxicity()
         if tox.reasons:
             notes.append(f"🛑 toxicity={tox.score:.2f}: " + " | ".join(tox.reasons))
-            # Telegram 通知:toxicity 觸發是罕見大事
-            try:
-                notify.toxicity_detected(self.cfg.slug, tox.score, tox.reasons)
-            except Exception:
-                pass
         elif tox.score > 0:
             notes.append(f"toxicity={tox.score:.2f}")
 
