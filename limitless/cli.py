@@ -627,6 +627,100 @@ def _parse_iso(date_str: str | None) -> float | None:
     return None
 
 
+@limitless_group.command(name="reward-farm")
+@click.option("--coins", default="BTC,ETH",
+              help="逗號分隔的幣種(對應 'X Up or Down' 市場),預設 BTC,ETH")
+@click.option("--freq", type=click.Choice(["5 Min", "15 Min", "Hourly"]), default="15 Min",
+              help="結算頻率(預設 15 Min,比 5 Min 好觀察)")
+@click.option("--size", "size_shares", type=float, default=100.0,
+              help="每筆掛單股數;需 ≥ minSize(100)才算合格流動性")
+@click.option("--edge-frac", type=float, default=0.7,
+              help="δ = edge_frac × maxSpread。越小越貼 mid(分數高但易被成交),預設 0.7(偏安全)")
+@click.option("--poll", "poll_interval_s", type=float, default=20.0, help="每輪間隔秒數")
+@click.option("--pull-before", "pull_before_settlement_s", type=float, default=45.0,
+              help="距結算 < 此秒數就撤所有單(避開到期 snap)")
+@click.option("--duration", type=int, default=0, help="跑多少秒;0 = 直到 Ctrl-C")
+@click.option("--execute", is_flag=True, help="真實掛單;不加就只 dry-run")
+def lm_reward_farm_cmd(coins: str, freq: str, size_shares: float, edge_frac: float,
+                       poll_interval_s: float, pull_before_settlement_s: float,
+                       duration: int, execute: bool) -> None:
+    """賺 Limitless LP 流動性獎勵(不是賺 spread)。
+
+    在 maxSpread 帶內掛雙邊 GTC post_only 單,按「在帶內的 size × 近 mid²」每分鐘計分,
+    分數佔比 × 每日獎勵池 = USDC 獎勵(不需成交)。臨近結算自動撤單避開 snap。
+
+    [yellow]預設 dry-run[/yellow];加 --execute 才真實掛單。
+    """
+    from datetime import datetime, timezone
+    from .reward_farm import RewardFarmConfig, RewardFarmer
+    from .trading import LimitlessTradingClient
+
+    coin_list = [c.strip().upper() for c in coins.split(",") if c.strip()]
+    cfg = RewardFarmConfig(
+        coins=coin_list, freq=freq, size_shares=size_shares, edge_frac=edge_frac,
+        poll_interval_s=poll_interval_s, pull_before_settlement_s=pull_before_settlement_s,
+        duration_s=duration,
+    )
+    if execute:
+        os.environ["LIMITLESS_EXECUTE"] = "1"
+
+    async def _run():
+        try:
+            tc = LimitlessTradingClient.from_env()
+        except RuntimeError as e:
+            console.print(f"[red]{e}[/red]")
+            sys.exit(1)
+        # 安全限額:每筆最高股數 × 1.0(最壞 BUY 價)+ buffer;session 設大(每輪會重設)
+        tc.safety.max_notional_per_order = max(tc.safety.max_notional_per_order, size_shares * 1.0 + 5)
+        tc.safety.max_notional_per_session = max(tc.safety.max_notional_per_session,
+                                                 size_shares * 2 * (len(coin_list) + 1) + 50)
+        async with LimitlessClient() as lm:
+            farmer = RewardFarmer(cfg, tc, lm)
+            console.print(Panel(
+                f"[bold]Reward Farming ({'真實' if execute else 'DRY-RUN'})[/bold]\n"
+                f"幣種:{', '.join(coin_list)}  頻率:{freq}\n"
+                f"每筆:{size_shares:.0f} 股  δ={edge_frac:.0%}×maxSpread  "
+                f"poll={poll_interval_s:.0f}s  結算前撤單:{pull_before_settlement_s:.0f}s\n"
+                f"[dim]獎勵=分數佔比×每日池(不需成交);被成交=逆選擇暴露,留意 fills[/dim]",
+                border_style="green" if execute else "yellow"))
+
+            def on_round(n, results):
+                ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
+                console.print(f"[dim]#{n:03d} {ts}[/dim]")
+                for r in results:
+                    if r.get("note"):
+                        console.print(f"   [dim]{r['slug'][:30]}: {r['note']}[/dim]")
+                        continue
+                    fy, fn = r.get("fills", (0, 0))
+                    fill_txt = f" [red]fills Y={fy} N={fn}[/red]" if (fy or fn) else ""
+                    bids = r.get("bids")
+                    bid_txt = f" YES@{bids[0]} NO@{bids[1]}" if bids else ""
+                    err = f" [red]{r.get('err')}[/red]" if r.get("err") else ""
+                    console.print(
+                        f"   {r['slug'][:26]:26} {r.get('action',''):10} "
+                        f"M={r.get('M','-')}{bid_txt} left={r.get('secs_left','-')}s{fill_txt}{err}")
+
+            try:
+                stats = await farmer.run(on_round=on_round)
+            except KeyboardInterrupt:
+                console.print("\n[yellow]中止,撤所有單...[/yellow]")
+            finally:
+                await tc.close()
+            ib = stats.get("in_band", {})
+            lines = []
+            for s, (y, n) in stats["fills"].items():
+                inb, tot = ib.get(s, (0, 0))
+                frac = f"{100*inb/tot:.0f}%" if tot else "-"
+                lines.append(f"  {s[:30]}: 帶內{frac}({inb}/{tot})  fills YES={y} NO={n}")
+            console.print(Panel(
+                f"[bold]結束[/bold]  輪數:{stats['rounds']}\n"
+                f"[dim]帶內% = 計分時段佔比(稀釋 naive 估計的關鍵);fills = 逆選擇暴露[/dim]\n" +
+                "\n".join(lines),
+                border_style="cyan"))
+
+    asyncio.run(_run())
+
+
 @limitless_group.command(name="mm-rank")
 @click.option("--max-markets", type=int, default=500,
               help="掃描多少個活躍市場（預設 500，越多越慢）")
@@ -1657,7 +1751,7 @@ cli.add_command(pnl_group)               # `limitless pnl ...`
 # ---------- Limitless 命令的 top-level 捷徑(`limitless mm-loop` ≡ `limitless mm-loop`)----------
 
 for _name in ("scan", "closest", "auth-derive", "place-order",
-              "make-market", "mm-rank", "mm-loop"):
+              "make-market", "reward-farm", "mm-rank", "mm-loop"):
     _cmd = limitless_group.commands.get(_name)
     if _cmd is not None:
         cli.add_command(_cmd, name=_name)
